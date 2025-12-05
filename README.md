@@ -1,3 +1,6 @@
+# ComputerVision
+Sobel Edge Detection for Self-Driving Car Vision: A Parallel Computing Pipeline from CPU to GPU Acceleration
+
 Here is the serial code for the sobel filter. Between now and 
 when I give the final starter code, the sobel_filter() function is 
 unlikely to change as that is the algorithm. What may change about the serial 
@@ -22,4 +25,3 @@ time for other preprocessing/postprocessing steps becomes beneficial.
 For now, you can play with the threashold and distance algorithm used. For the 
 final starter code, I plan on including a script to test sobel filter outputs 
 against ground truth as accuracy metrics are important in computer vision.
-
