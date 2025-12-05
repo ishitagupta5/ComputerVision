@@ -48,14 +48,14 @@ void sobel_filter(uint8_t *src_arr, uint8_t *dest_arr,
 
 int main(int argc, char** argv)
 {
-    if (argc < 3) {
-        printf("Usage: ./sobel_video_headless input.mp4 output.mp4\n");
+    if (argc < 2) {
+        printf("Usage: ./sobel_video_export input.mp4\n");
         return 1;
     }
 
     VideoCapture cap(argv[1]);
     if (!cap.isOpened()) {
-        printf("Error: cannot open input video.\n");
+        printf("Error: Cannot open input video\n");
         return 1;
     }
 
@@ -63,19 +63,21 @@ int main(int argc, char** argv)
     int height = cap.get(CAP_PROP_FRAME_HEIGHT);
     double fps = cap.get(CAP_PROP_FPS);
 
-    printf("Processing video (%dx%d @ %.2f FPS)...\n", width, height, fps);
+    if (fps < 1 || fps > 240) fps = 30; // fallback
 
-    // Write processed frames into output.mp4
+    printf("Processing %s (%dx%d @ %.2f FPS)\n", argv[1], width, height, fps);
+
+    // Output writer: MP4 (H264)
     VideoWriter writer(
-        argv[2],
-        VideoWriter::fourcc('m','p','4','v'),
+        "sobel_output.mp4",
+        cv::VideoWriter::fourcc('a','v','c','1'),  // H264 codec
         fps,
         Size(width, height),
-        false   // <-- grayscale output
+        false // grayscale video
     );
 
     if (!writer.isOpened()) {
-        printf("Error: could not open output file for writing.\n");
+        printf("Error: Cannot open output writer!\n");
         return 1;
     }
 
@@ -93,18 +95,16 @@ int main(int argc, char** argv)
 
         sobel_filter(gray.data, dest, height, width, 150, 1);
 
-        // Write processed frame
         writer.write(sobel_mat);
-
-        if (frame_count % 30 == 0)
-            printf("Processed %d frames...\n", frame_count);
-
         frame_count++;
+
+        if (frame_count % 50 == 0)
+            printf("Processed %d frames...\n", frame_count);
     }
+
+    printf("Done. Saved sobel_output.mp4 (%d frames).\n", frame_count);
 
     cap.release();
     writer.release();
-
-    printf("Finished. Output saved to: %s\n", argv[2]);
     return 0;
 }
