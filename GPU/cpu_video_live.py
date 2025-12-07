@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""
+Live video Sobel edge detection - processes webcam feed in real-time
+Works without GPU - uses OpenCV and NumPy
+"""
+
+import cv2
+import numpy as np
+import sys
+import time
+
+def sobel_filter_cpu(src, threshold=150):
+    """
+    Apply Sobel edge detection filter on CPU
+    """
+    # Convert to grayscale if needed
+    if len(src.shape) == 3:
+        gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = src.copy()
+    
+    # Apply Sobel operators
+    sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    
+    # Calculate magnitude
+    magnitude = np.sqrt(sobelx**2 + sobely**2)
+    
+    # Threshold
+    edges = (magnitude > threshold).astype(np.uint8) * 255
+    
+    # Zero out border pixels
+    edges[0, :] = 0
+    edges[-1, :] = 0
+    edges[:, 0] = 0
+    edges[:, -1] = 0
+    
+    return edges
+
+def main():
+    # Camera device index (0 is usually the default webcam)
+    camera_index = 0
+    if len(sys.argv) >= 2:
+        camera_index = int(sys.argv[1])
+    
+    threshold = 150
+    if len(sys.argv) >= 3:
+        threshold = int(sys.argv[2])
+    
+    print(f"Opening camera {camera_index}...")
+    print("Press 'q' to quit, 's' to save screenshot, '+'/'-' to adjust threshold")
+    print(f"Current threshold: {threshold}")
+    
+    # Open camera
+    cap = cv2.VideoCapture(camera_index)
+    if not cap.isOpened():
+        print(f"ERROR: Cannot open camera {camera_index}")
+        print("Try a different camera index (0, 1, 2, etc.)")
+        sys.exit(1)
+    
+    # Set camera properties for better performance
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    
+    print(f"Camera opened: {width}x{height} @ {fps:.2f} fps")
+    
+    frame_count = 0
+    start_time = time.time()
+    last_fps_time = start_time
+    fps_display = 0.0
+    
+    # Create window
+    cv2.namedWindow('Sobel Edge Detection - Live', cv2.WINDOW_NORMAL)
+    
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                print("ERROR: Failed to read frame from camera")
+                break
+            
+            # Process frame
+            process_start = time.time()
+            edges = sobel_filter_cpu(frame, threshold=threshold)
+            process_time = time.time() - process_start
+            
+            # Convert grayscale to BGR for display (so we can add text)
+            edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+            
+            # Calculate and display FPS
+            frame_count += 1
+            current_time = time.time()
+            if current_time - last_fps_time >= 1.0:  # Update FPS every second
+                fps_display = frame_count / (current_time - start_time)
+                last_fps_time = current_time
+            
+            # Add text overlay
+            cv2.putText(edges_bgr, f"FPS: {fps_display:.1f}", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(edges_bgr, f"Threshold: {threshold}", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(edges_bgr, f"Process: {process_time*1000:.1f}ms", (10, 90),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(edges_bgr, "Press 'q' to quit", (10, height - 20),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            
+            # Display the frame
+            cv2.imshow('Sobel Edge Detection - Live', edges_bgr)
+            
+            # Handle keyboard input
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                print("Quitting...")
+                break
+            elif key == ord('s'):
+                # Save screenshot
+                filename = f"sobel_screenshot_{int(time.time())}.png"
+                cv2.imwrite(filename, edges)
+                print(f"Screenshot saved: {filename}")
+            elif key == ord('+') or key == ord('='):
+                threshold = min(255, threshold + 10)
+                print(f"Threshold increased to: {threshold}")
+            elif key == ord('-') or key == ord('_'):
+                threshold = max(0, threshold - 10)
+                print(f"Threshold decreased to: {threshold}")
+    
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+    
+    finally:
+        # Cleanup
+        cap.release()
+        cv2.destroyAllWindows()
+        
+        elapsed = time.time() - start_time
+        if frame_count > 0:
+            avg_fps = frame_count / elapsed
+            print(f"\nProcessed {frame_count} frames in {elapsed:.2f} seconds")
+            print(f"Average FPS: {avg_fps:.2f}")
+
+if __name__ == "__main__":
+    main()
+

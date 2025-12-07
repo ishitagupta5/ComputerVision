@@ -81,11 +81,11 @@ int main(int argc, char** argv)
 
     // Try H264 codec first (better compression), fallback to MJPEG if unavailable
     int fourcc = VideoWriter::fourcc('H','2','6','4');  // H264 codec
-    VideoWriter writer(output_path, fourcc, fps, Size(width, height), true);
+    VideoWriter writer(output_path, fourcc, fps, Size(width, height), false);
     if (!writer.isOpened()) {
         // Fallback to MJPEG if H264 not available
         fourcc = VideoWriter::fourcc('M','J','P','G');
-        writer.open(output_path, fourcc, fps, Size(width, height), true);
+writer.open(output_path, fourcc, fps, Size(width, height), false);
     }
     if (!writer.isOpened()) {
         std::printf("ERROR: Cannot open output video: %s\n", output_path);
@@ -195,9 +195,7 @@ int main(int argc, char** argv)
         // Copy result to OpenCV Mat
         memcpy(sobel_gray.data, h_dst_pinned, num_bytes);
         
-        // Convert and write
-        cvtColor(sobel_gray, sobel_bgr, COLOR_GRAY2BGR);
-        writer.write(sobel_bgr);
+        writer.write(sobel_gray);
         
         if (verbose && frame_idx % 30 == 0) {
             std::printf("Processed frame %d\n", frame_idx);
