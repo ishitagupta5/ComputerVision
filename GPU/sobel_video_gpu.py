@@ -4,6 +4,8 @@ import cupy as cp
 import numpy as np
 import sys
 import time
+from ultralytics import YOLO
+model = YOLO("yolo11x.pt")
 
 # ---------------------------------------
 # CUDA SOBEL KERNEL
@@ -79,7 +81,7 @@ def main():
         cv2.VideoWriter_fourcc(*'mp4v'),
         fps,
         (width, height),
-        False
+        True
     )
 
     if not writer.isOpened():
@@ -97,6 +99,11 @@ def main():
         if not ret:
             break
 
+        # ---------- YOLO OBJECT DETECTION ON ORIGINAL FRAME ----------
+        results = model(frame)          # list with one result
+        r = results[0]
+
+        # ---------- YOUR EXISTING GPU SOBEL PIPELINE ----------
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # Upload to GPU
@@ -118,13 +125,36 @@ def main():
         # Download
         edges = cp.asnumpy(d_dst)
 
-        writer.write(edges)
+        # ---------- CONVERT SOBEL TO 3-CHANNEL FOR DRAWING ----------
+        sobel_3ch = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+
+        # ---------- DRAW YOLO BOXES ON TOP OF SOBEL IMAGE ----------
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cls = int(box.cls)
+            conf = float(box.conf)
+
+            cv2.rectangle(sobel_3ch, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(
+                sobel_3ch,
+                f"{r.names[cls]} {conf:.2f}",
+                (x1, y1 - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2
+            )
+
+        # ---------- WRITE FRAME (SOBEL + YOLO) ----------
+        writer.write(sobel_3ch)
         frame_count += 1
 
+        # 🔥 your print statement stays exactly the same
         if verbose and frame_count % 30 == 0:
             elapsed = time.time() - start_total
             fps_now = frame_count / elapsed
             print(f"[GPU {gpu_time:.3f} ms] Frame {frame_count}, Avg FPS={fps_now:.2f}")
+
 
     cap.release()
     writer.release()
