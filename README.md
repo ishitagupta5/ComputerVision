@@ -99,7 +99,7 @@ python3 gpu_video_live.py input.mp4 output.mp4 1
 |----------|-------------|
 | `input.mp4` | Input video file |
 | `output.mp4` | Output video with Sobel edges |
-| `1` | Enable GPU processing |
+| `1` | Verbose |
 
 **Live camera (device 0):**
 ```bash
