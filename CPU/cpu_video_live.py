@@ -8,6 +8,9 @@ import cv2
 import numpy as np
 import sys
 import time
+from ultralytics import YOLO
+model = YOLO("yolo11x.pt")
+
 
 def sobel_filter_cpu(src, threshold=150):
     """
@@ -91,7 +94,10 @@ def main():
             
             # Convert grayscale to BGR for display (so we can add text)
             edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-            
+
+            results = model(frame, verbose=False)          
+            r = results[0]
+
             # Calculate and display FPS
             frame_count += 1
             current_time = time.time()
@@ -109,8 +115,27 @@ def main():
             cv2.putText(edges_bgr, "Press 'q' to quit", (10, height - 20),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
+            #convert single channel to 3 channel BGR for display and writing
+            sobel_3ch = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+
+            #draw yolo boxes on sobel image
+            for box in r.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                cls = int(box.cls)
+                conf = float(box.conf)
+
+                cv2.rectangle(sobel_3ch, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(
+                    sobel_3ch,
+                    f"{r.names[cls]} {conf:.2f}",
+                    (x1, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2
+                )
             # Display the frame
-            cv2.imshow('Sobel Edge Detection - Live', edges_bgr)
+            cv2.imshow('Sobel Edge Detection - Live', sobel_3ch)
             
             # Handle keyboard input
             key = cv2.waitKey(1) & 0xFF

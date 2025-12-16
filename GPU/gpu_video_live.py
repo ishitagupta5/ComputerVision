@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-# Live GPU-based Sobel edge detection for webcam video using CuPy
+# Live GPU-based Sobel edge detection for webcam video using CuPy + YOLO
 
 import cv2
 import cupy as cp
 import numpy as np
 import sys
 import time
+from ultralytics import YOLO
 
-# ---------------------------------------
-# CUDA SOBEL KERNEL
-# ---------------------------------------
+# Load YOLO model on GPU
+model = YOLO("yolo11x.pt")
+model.to("cuda")  # load yolo model to gpu
+
 sobel_kernel = cp.RawKernel(r"""
 extern "C" __global__
 void sobel(const unsigned char* src,
@@ -54,7 +56,6 @@ void sobel(const unsigned char* src,
 
 
 def main():
-    # --------- CLI args ---------
     camera_index = 0
     if len(sys.argv) >= 2:
         camera_index = int(sys.argv[1])
@@ -71,14 +72,12 @@ def main():
     print("Press 'q' to quit, 's' to save screenshot, '+'/'-' to adjust threshold")
     print(f"Current threshold: {threshold}")
 
-    # --------- Open camera ---------
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
         print(f"ERROR: Cannot open camera {camera_index}")
         print("Try a different camera index (0, 1, 2, ...)")
         sys.exit(1)
 
-    # Set properties (best effort)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS,          30)
@@ -89,7 +88,6 @@ def main():
 
     print(f"Camera opened: {width}x{height} @ {fps_cam:.2f} fps (reported)")
 
-    # --------- GPU setup ---------
     block = (16, 16)
     grid = ((width + block[0] - 1) // block[0],
             (height + block[1] - 1) // block[1])
@@ -102,7 +100,7 @@ def main():
     last_fps_time = start_time
     fps_display = 0.0
 
-    cv2.namedWindow("GPU Sobel - Live", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("GPU Sobel + YOLO - Live", cv2.WINDOW_NORMAL)
 
     try:
         while True:
@@ -111,15 +109,18 @@ def main():
                 print("ERROR: Failed to read frame from camera")
                 break
 
-            # Convert to grayscale
+            results = model(frame, verbose=False)
+            r = results[0]
+
+            # Convert to grayscale for Sobel
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            # Upload to GPU
+            # Upload to GPU (Sobel input)
             upload_start = time.time()
             d_src.set(gray)
             upload_ms = (time.time() - upload_start) * 1000.0
 
-            # Run kernel
+            # Run Sobel kernel on GPU
             gpustart = time.time()
             sobel_kernel(
                 grid, block,
@@ -134,13 +135,31 @@ def main():
             cp.cuda.Stream.null.synchronize()
             gpu_ms = (time.time() - gpustart) * 1000.0
 
-            # Download result
+            # Download result from GPU
             download_start = time.time()
             edges = cp.asnumpy(d_dst)
             download_ms = (time.time() - download_start) * 1000.0
 
-            # Convert to BGR for overlay
+            # Convert Sobel edges to BGR for overlay
             edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+            sobel_3ch = edges_bgr.copy()
+
+            # Draw YOLO boxes on Sobel image
+            for box in r.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                cls = int(box.cls)
+                conf = float(box.conf)
+
+                cv2.rectangle(sobel_3ch, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(
+                    sobel_3ch,
+                    f"{r.names[cls]} {conf:.2f}",
+                    (x1, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2
+                )
 
             # FPS calc
             frame_count += 1
@@ -149,28 +168,28 @@ def main():
                 fps_display = frame_count / (now - start_time)
                 last_fps_time = now
 
-            # Overlay text
-            cv2.putText(edges_bgr, f"FPS: {fps_display:.1f}", (10, 30),
+            # Overlay text (on Sobel + YOLO image)
+            cv2.putText(sobel_3ch, f"FPS: {fps_display:.1f}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(edges_bgr, f"Threshold: {threshold}", (10, 60),
+            cv2.putText(sobel_3ch, f"Threshold: {threshold}", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(edges_bgr, f"GPU: {gpu_ms:.2f} ms", (10, 90),
+            cv2.putText(sobel_3ch, f"Sobel GPU: {gpu_ms:.2f} ms", (10, 90),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(edges_bgr, f"Up: {upload_ms:.2f} ms Down: {download_ms:.2f} ms", (10, 120),
+            cv2.putText(sobel_3ch, f"Up: {upload_ms:.2f} ms Down: {download_ms:.2f} ms", (10, 120),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.putText(edges_bgr, "Press 'q' to quit, 's' to save, +/- threshold",
+            cv2.putText(sobel_3ch, "Press 'q' to quit, 's' to save, +/- threshold",
                         (10, height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (0, 255, 0), 1)
 
-            cv2.imshow("GPU Sobel - Live", edges_bgr)
+            cv2.imshow("GPU Sobel + YOLO - Live", sobel_3ch)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 print("Quitting...")
                 break
             elif key == ord('s'):
-                filename = f"gpu_sobel_screenshot_{int(time.time())}.png"
-                cv2.imwrite(filename, edges)
+                filename = f"gpu_sobel_yolo_{int(time.time())}.png"
+                cv2.imwrite(filename, sobel_3ch)
                 print(f"Screenshot saved: {filename}")
             elif key == ord('+') or key == ord('='):
                 threshold = min(255, threshold + 10)

@@ -88,7 +88,7 @@ if (verbose) {
     uint8_t *d_src = nullptr, *d_dst = nullptr;
     cudaError_t err;
 
-    // *** declare everything BEFORE any goto cleanup ***
+    //declare everything BEFORE any goto cleanup 
     dim3 block(16, 16);
     dim3 grid((width  + block.x - 1) / block.x,
               (height + block.y - 1) / block.y);
@@ -120,11 +120,11 @@ if (verbose) {
         goto cleanup;
     }
 
-    // --- warm-up run (do NOT time this) ---
+    //warmup run 
     sobelKernel<<<grid, block>>>(d_src, d_dst, width, height, threshold);
     cudaDeviceSynchronize();
 
-    // --- timed runs ---
+    //timed runs 
     cudaEventRecord(start);
     for (int i = 0; i < N; ++i) {
         sobelKernel<<<grid, block>>>(d_src, d_dst, width, height, threshold);

@@ -6,10 +6,10 @@ import sys
 import time
 from ultralytics import YOLO
 model = YOLO("yolo11x.pt")
+model.to("cuda") #load yolo model to gpu
 
-# ---------------------------------------
-# CUDA SOBEL KERNEL
-# ---------------------------------------
+
+#takes raw cuda c code as a string and compiles it into gpu code using CuPy(nvidia compiler) then wraps it as a python object
 sobel_kernel = cp.RawKernel(r"""
 extern "C" __global__
 void sobel(const unsigned char* src,
@@ -51,9 +51,7 @@ void sobel(const unsigned char* src,
 }
 """, "sobel")
 
-# ---------------------------------------
-# MAIN
-# ---------------------------------------
+#main funct parse arguments for calling
 def main():
     if len(sys.argv) < 3:
         print("Usage: python3 sobel_video_gpu.py input.mp4 output.mp4 [verbose]")
@@ -93,42 +91,42 @@ def main():
 
     frame_count = 0
     start_total = time.time()
-
+    #main loop to run sobel + yolo on each frame
     while True:
+        #read frame
         ret, frame = cap.read()
         if not ret:
             break
-
-        # ---------- YOLO OBJECT DETECTION ON ORIGINAL FRAME ----------
-        results = model(frame)          # list with one result
+        #run yolo on the BGR frame
+        results = model(frame, verbose=False)          
         r = results[0]
 
-        # ---------- YOUR EXISTING GPU SOBEL PIPELINE ----------
+        #Convert to grayscale *on CPU*
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Upload to GPU
+        #upload to GPU
         d_src = cp.asarray(gray)
         d_dst = cp.zeros_like(d_src)
 
-        # ---- GPU timing ----
+        #GPU timing for data collection
         gpustart = time.time()
 
-        sobel_kernel(grid, block, (
+        sobel_kernel(grid, block, ( #launches the kernel on the gpu with the configured grid and block sizes
             d_src, d_dst,
             np.int32(width), np.int32(height),
             np.int32(150)
         ))
 
         cp.cuda.Stream.null.synchronize()
-        gpu_time = (time.time() - gpustart) * 1000  # ms
+        gpu_time = (time.time() - gpustart) * 1000  #computes time per frame in ms
 
-        # Download
+        #download
         edges = cp.asnumpy(d_dst)
 
-        # ---------- CONVERT SOBEL TO 3-CHANNEL FOR DRAWING ----------
+        #convert single channel to 3 channel BGR for display and writing
         sobel_3ch = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
 
-        # ---------- DRAW YOLO BOXES ON TOP OF SOBEL IMAGE ----------
+        #draw yolo boxes on sobel image
         for box in r.boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             cls = int(box.cls)
@@ -145,11 +143,11 @@ def main():
                 2
             )
 
-        # ---------- WRITE FRAME (SOBEL + YOLO) ----------
+        #frames and stats
         writer.write(sobel_3ch)
         frame_count += 1
 
-        # 🔥 your print statement stays exactly the same
+        #stats for data collection prints every 30 frames
         if verbose and frame_count % 30 == 0:
             elapsed = time.time() - start_total
             fps_now = frame_count / elapsed
@@ -160,7 +158,7 @@ def main():
     writer.release()
 
     total = time.time() - start_total
-    print(f"\n✅ Saved → {output_path}")
+    print(f"\n Saved → {output_path}")
     print(f"Frames: {frame_count}, Total time: {total:.2f}s, Avg FPS = {frame_count/total:.2f}")
 
 if __name__ == "__main__":

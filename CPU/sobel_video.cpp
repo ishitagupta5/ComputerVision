@@ -5,6 +5,7 @@
 #include <omp.h>
 #include <opencv2/opencv.hpp>
 
+
 using namespace cv;
 
 void sobel_filter(uint8_t *src_arr, uint8_t *dest_arr,

@@ -108,7 +108,7 @@ writer.open(output_path, fourcc, fps, Size(width, height), false);
         return 1;
     }
 
-    // Allocate pinned (page-locked) memory for faster transfers
+    // Allocate pinned memory for faster transfers
     uint8_t *h_src_pinned = nullptr, *h_dst_pinned = nullptr;
     uint8_t *d_src = nullptr, *d_dst = nullptr;
     
@@ -167,7 +167,7 @@ writer.open(output_path, fourcc, fps, Size(width, height), false);
         // Copy to pinned memory
         memcpy(h_src_pinned, gray.data, num_bytes);
         
-        // Asynchronous copy to GPU (non-blocking!)
+        // Asynchronous copy to GPU
         err = cudaMemcpyAsync(d_src, h_src_pinned, num_bytes, 
                              cudaMemcpyHostToDevice, stream);
         if (err != cudaSuccess) {
@@ -178,7 +178,7 @@ writer.open(output_path, fourcc, fps, Size(width, height), false);
         // Launch kernel asynchronously
         sobelKernel<<<grid, block, 0, stream>>>(d_src, d_dst, width, height, threshold);
         
-        // Asynchronous copy back (non-blocking!)
+        // Asynchronous copy back
         err = cudaMemcpyAsync(h_dst_pinned, d_dst, num_bytes, 
                              cudaMemcpyDeviceToHost, stream);
         if (err != cudaSuccess) {
