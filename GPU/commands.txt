@@ -1,0 +1,2 @@
+python3 sobel_video_gpu.py(python file) inputfile.mp4 outputfile.mp4 1(verbose) - 0 for no prints
+python3 sobel_video_gpu.py kidcrossin.mp4 outputtest.mp4 1
