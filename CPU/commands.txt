@@ -1,0 +1,6 @@
+python3 cpu_video_live.py 0 150
+
+make sure you have sobel.lip.cpp on ur powershell
+g++ -O3 -fopenmp -shared -fPIC sobel_lib.cpp -o sobel.so
+export OMP_NUM_THREADS=4
+python3 cpu_video_live_ai.py 0 150
