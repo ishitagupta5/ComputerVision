@@ -10,26 +10,18 @@ import sys
 import time
 
 def sobel_filter_cpu(src, threshold=150):
-    """
-    Apply Sobel edge detection filter on CPU
-    """
-    # Convert to grayscale if needed
     if len(src.shape) == 3:
         gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
     else:
         gray = src.copy()
     
-    # Apply Sobel operators
     sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
     sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     
-    # Calculate magnitude
     magnitude = np.sqrt(sobelx**2 + sobely**2)
     
-    # Threshold
     edges = (magnitude > threshold).astype(np.uint8) * 255
     
-    # Zero out border pixels
     edges[0, :] = 0
     edges[-1, :] = 0
     edges[:, 0] = 0
@@ -47,7 +39,6 @@ def main():
     output_path = sys.argv[2]
     verbose = int(sys.argv[3]) if len(sys.argv) >= 4 else 1
     
-    # Open video
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         print(f"ERROR: Cannot open video file: {input_path}")
@@ -62,7 +53,6 @@ def main():
     if verbose:
         print(f"Processing video: {input_path} ({width}x{height} @ {fps:.2f} fps)")
     
-    # Create video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height), False)
     
@@ -79,10 +69,8 @@ def main():
         if not ret or frame is None:
             break
         
-        # Process frame
         edges = sobel_filter_cpu(frame, threshold=150)
         
-        # Write frame
         writer.write(edges)
         frame_count += 1
         

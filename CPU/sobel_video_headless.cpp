@@ -63,17 +63,16 @@ int main(int argc, char** argv)
     int height = cap.get(CAP_PROP_FRAME_HEIGHT);
     double fps = cap.get(CAP_PROP_FPS);
 
-    if (fps < 1 || fps > 240) fps = 30; // fallback
+    if (fps < 1 || fps > 240) fps = 30;
 
     printf("Processing %s (%dx%d @ %.2f FPS)\n", argv[1], width, height, fps);
 
-    // Output writer: MP4 (H264)
     VideoWriter writer(
         "sobel_output.mp4",
-        cv::VideoWriter::fourcc('a','v','c','1'),  // H264 codec
+        cv::VideoWriter::fourcc('a','v','c','1'),  
         fps,
         Size(width, height),
-        false // grayscale video
+        false 
     );
 
     if (!writer.isOpened()) {

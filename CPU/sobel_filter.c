@@ -12,7 +12,6 @@
 
 void sobel_filter(uint8_t * src_arr,uint8_t * dest_arr,int height, int width,int threshold,int metric)
 {	
-	/* Variable Declaration */
 	int x_sum, y_sum;
 
 	for (int x = 1; x < height - 1; x++) {

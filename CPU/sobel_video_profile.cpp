@@ -7,7 +7,6 @@
 
 using namespace cv;
 
-// ---------- Sobel filter (same as your parallel version) ----------
 void sobel_filter(uint8_t *src_arr, uint8_t *dest_arr,
                   int height, int width, int threshold, int metric)
 {
@@ -47,7 +46,6 @@ void sobel_filter(uint8_t *src_arr, uint8_t *dest_arr,
     }
 }
 
-// ---------- CPU usage helper (reads /proc/stat) ----------
 struct CpuTimes {
     unsigned long long user;
     unsigned long long nice;
@@ -65,12 +63,11 @@ bool read_cpu_times(CpuTimes &t) {
     FILE *fp = fopen("/proc/stat", "r");
     if (!fp) return false;
 
-    // First line: cpu  user nice system idle iowait irq softirq steal guest guest_nice
     int scanned = fscanf(fp, "cpu  %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
                          &t.user, &t.nice, &t.system, &t.idle, &t.iowait,
                          &t.irq, &t.softirq, &t.steal, &t.guest, &t.guest_nice);
     fclose(fp);
-    return (scanned >= 4); // at least user,nice,system,idle
+    return (scanned >= 4);
 }
 
 double compute_cpu_usage(const CpuTimes &start, const CpuTimes &end) {
@@ -93,7 +90,6 @@ double compute_cpu_usage(const CpuTimes &start, const CpuTimes &end) {
     return cpu_percentage;
 }
 
-// ---------- Main profiling program ----------
 int main(int argc, char** argv)
 {
     if (argc < 2) {
@@ -113,7 +109,6 @@ int main(int argc, char** argv)
     int height = (int)cap.get(CAP_PROP_FRAME_HEIGHT);
     double src_fps = cap.get(CAP_PROP_FPS);
 
-    // Read thread count from environment (for logging)
     int threads = 0;
     char* env_threads = getenv("OMP_NUM_THREADS");
     if (env_threads) {
@@ -156,7 +151,6 @@ int main(int argc, char** argv)
         frame_count++;
         last_time = c_end;
 
-        // CSV-style line per frame
         printf("%lld,%.6f\n", frame_count, compute_time);
     }
 

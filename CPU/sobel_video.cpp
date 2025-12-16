@@ -54,7 +54,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    //for compatible cmaera i would replace it to cap(0)
     VideoCapture cap(argv[1]);
     if (!cap.isOpened()) {
         printf("Error: Cannot open video file\n");
