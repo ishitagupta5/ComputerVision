@@ -11,25 +11,42 @@
 #   e = toggle GPU Sobel edge overlay (per-view)
 #   r = restart (reopen first scene)
 
+# multicam/demo_triplet.py
+
 import os
 import time
 import cv2
+import traceback
 
 from triplet_loader import TripletLoader
 
-# Import your GPU Sobel API (keep GPU folder as-is; just import it)
+# Try GPU Sobel import, fallback to CPU
 import sys
 sys.path.append("../GPU")
-from sobel_gpu_api import sobel_gpu_edges, overlay_edges_red
+
+GPU_AVAILABLE = True
+try:
+    from sobel_gpu_api import sobel_gpu_edges
+except Exception as e:
+    print("[GPU Sobel unavailable — using CPU Sobel fallback]")
+    print("Reason:", e)
+    GPU_AVAILABLE = False
+
+    def sobel_gpu_edges(frame_bgr, threshold=80):
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+
+        gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+
+        mag = cv2.magnitude(gx, gy)
+        mag = cv2.convertScaleAbs(mag)
+
+        _, edges = cv2.threshold(mag, threshold, 255, cv2.THRESH_BINARY)
+        return edges
 
 
-DATAROOT = "../data/nuscenes"   # dataroot must contain samples/ and v1.0-mini/
-OUTDIR = "./outputs"
-RESIZE = (640, 360)            # (w, h)
-
-
-def ensure_outdir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
+DATAROOT = "../data/nuscenes"
+RESIZE = (640, 360)
 
 
 def put_label(img, text, x=10, y=28):
@@ -41,75 +58,63 @@ def put_label(img, text, x=10, y=28):
 
 
 def tile3(left, front, right):
-    # left/front/right are same size => side-by-side
     return cv2.hconcat([left, front, right])
 
 
 def main():
-    ensure_outdir(OUTDIR)
 
     loader = TripletLoader(DATAROOT, size=RESIZE)
+    print("[debug] loader created")
 
     sobel_on = False
     paused = False
     step_once = False
 
     last_time = time.time()
-    fps = 0.0
-
-    # For screenshot naming even when paused before first frame
-    t = 0
-    tiled = None
 
     while True:
-        # Only pull a new synchronized triplet if not paused (or if stepping)
+
         if not paused or step_once:
             step_once = False
 
             result = loader.next()
             if result is None:
-                # End of scene: restart for convenience
+                print("[debug] end of scene, restarting")
                 loader = TripletLoader(DATAROOT, size=RESIZE)
                 continue
 
             t, left, front, right = result
 
-            # Optional: run YOUR GPU Sobel and overlay edges onto original frames
             if sobel_on:
                 left_edges = sobel_gpu_edges(left)
                 front_edges = sobel_gpu_edges(front)
                 right_edges = sobel_gpu_edges(right)
 
-                left_disp = overlay_edges_red(left, left_edges, alpha=0.70)
-                front_disp = overlay_edges_red(front, front_edges, alpha=0.70)
-                right_disp = overlay_edges_red(right, right_edges, alpha=0.70)
+                left_disp  = cv2.cvtColor(left_edges,  cv2.COLOR_GRAY2BGR)
+                front_disp = cv2.cvtColor(front_edges, cv2.COLOR_GRAY2BGR)
+                right_disp = cv2.cvtColor(right_edges, cv2.COLOR_GRAY2BGR)
             else:
                 left_disp, front_disp, right_disp = left, front, right
 
-            # Label each panel
             put_label(left_disp, "CAM_FRONT_LEFT")
             put_label(front_disp, "CAM_FRONT")
             put_label(right_disp, "CAM_FRONT_RIGHT")
 
-            # Tile into one image
             tiled = tile3(left_disp, front_disp, right_disp)
 
-            # FPS estimate (loop timing)
             now = time.time()
-            dt = max(1e-6, now - last_time)
-            fps = 1.0 / dt
+            fps = 1.0 / max(1e-6, now - last_time)
             last_time = now
 
             put_label(
                 tiled,
-                f"t={t}   FPS~{fps:.1f}   GPU Sobel={'ON' if sobel_on else 'OFF'}   (p pause, n step, e sobel, s save)",
+                f"t={t}   FPS~{fps:.1f}   Sobel={'ON' if sobel_on else 'OFF'}",
                 20, 60
             )
 
-            cv2.imshow("nuScenes Triplet Sync (LEFT | FRONT | RIGHT)", tiled)
+            cv2.imshow("nuScenes Triplet Sync", tiled)
 
-        # Key handling (always active)
-        key = cv2.waitKey(1) & 0xFF
+        key = cv2.waitKey(30) & 0xFF
 
         if key == ord("q"):
             break
@@ -122,21 +127,16 @@ def main():
             step_once = True
 
         if key == ord("e"):
+            if not GPU_AVAILABLE:
+                print("[info] CPU Sobel active (Intel GPU machine)")
             sobel_on = not sobel_on
-
-        if key == ord("r"):
-            loader = TripletLoader(DATAROOT, size=RESIZE)
-
-        if key == ord("s"):
-            if tiled is not None:
-                out_path = os.path.join(OUTDIR, f"triplet_t{t:04d}_sobel{int(sobel_on)}.png")
-                cv2.imwrite(out_path, tiled)
-                print(f"[saved] {out_path}")
-            else:
-                print("[warn] No frame yet to save.")
 
     cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        input("Press Enter to close...")
