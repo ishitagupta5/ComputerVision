@@ -252,17 +252,7 @@ def main():
 
             if show_disp and disp_color is not None:
                 put_label(disp_color, "DISPARITY (px)")
-
-                depth = disparity_to_depth_approx(disp)
-                depth_gray = depth_to_grayscale(depth, max_m=30.0)
-                depth_bgr = cv2.cvtColor(depth_gray, cv2.COLOR_GRAY2BGR)
-                put_label(depth_bgr, "DEPTH approx (near=bright)")
-
-                # Demo-friendly readout (approx)
-                h, w = depth.shape
-                center_depth = float(depth[h // 2, w // 2])
-
-                panels += [disp_color, depth_bgr]
+                panels += [disp_color]
 
             tiled = tile_panels(panels)
 
