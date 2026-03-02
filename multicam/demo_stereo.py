@@ -1,5 +1,5 @@
 # multicam/demo_stereo.py
-# Demo: Stereo overlap (LEFT | RIGHT) + disparity/depth visualization.
+# Stereo demo: LEFT | RIGHT | DISPARITY | "DEPTH PERCEPTION" overlays
 #
 # Uses YOUR GPU Sobel implementation via: ../GPU/sobel_gpu_api.py
 #
@@ -8,8 +8,9 @@
 #   p = pause/resume
 #   n = step one frame (when paused)
 #   s = save screenshot (tiled output) to ./outputs/
-#   e = toggle GPU Sobel edge overlay (per-view)
+#   e = toggle Sobel edge overlay ON TOP of RGB (per-view)
 #   d = toggle disparity/depth panels
+#   o = toggle disparity heatmap overlay on LEFT RGB (best for demos)
 #   r = restart
 
 import os
@@ -20,7 +21,7 @@ import numpy as np
 
 from stereo_loader import StereoKittiLoader
 
-# Try GPU Sobel import, fallback to CPU
+# ---- GPU Sobel import (same pattern as your triplet demo) ----
 import sys
 sys.path.append("../GPU")
 
@@ -41,11 +42,17 @@ except Exception as e:
         _, edges = cv2.threshold(mag, threshold, 255, cv2.THRESH_BINARY)
         return edges
 
-
-# ✅ set this to your dataset root that contains image_2 and image_3
-DATAROOT = "../data"   # change if needed
-RESIZE = (640, 360)
+# ---- Config ----
+DATAROOT = "../data"          # expects ../data/image_2 and ../data/image_3
+RESIZE = (640, 360)           # bump to (960,540) if your laptop can handle it
 OUTDIR = "./outputs"
+
+# For "approx metric" only (for perception + demo)
+BASELINE_M = 0.075
+FOCAL_PX = 700.0
+
+# WLS filter support (opencv-contrib)
+HAS_XIMGPROC = hasattr(cv2, "ximgproc")
 
 
 def put_label(img, text, x=10, y=28):
@@ -64,34 +71,20 @@ def tile_panels(panels):
     return cv2.hconcat(panels)
 
 
-def compute_disparity_sgbm(left_bgr, right_bgr):
-    left_gray = cv2.cvtColor(left_bgr, cv2.COLOR_BGR2GRAY)
-    right_gray = cv2.cvtColor(right_bgr, cv2.COLOR_BGR2GRAY)
-
-    # Demo defaults
-    min_disp = 0
-    num_disp = 192      # divisible by 16
-    block_size = 9     # odd
-
-    sgbm = cv2.StereoSGBM_create(
-        minDisparity=min_disp,
-        numDisparities=num_disp,
-        blockSize=block_size,
-        P1=8 * block_size * block_size,
-        P2=32 * block_size * block_size,
-        disp12MaxDiff=1,
-        uniquenessRatio=15,
-        speckleWindowSize=120,
-        speckleRange=2,
-        preFilterCap=31,
-        mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
-    )
-
-    disp = sgbm.compute(left_gray, right_gray).astype(np.float32) / 16.0
-    return disp
+def overlay_edges_on_rgb(frame_bgr, edges_gray, alpha=0.45):
+    """
+    Overlays edges (green) on top of RGB instead of replacing the image.
+    Looks WAY cleaner for demos.
+    """
+    overlay = frame_bgr.copy()
+    overlay[edges_gray > 0] = (0, 255, 0)
+    return cv2.addWeighted(frame_bgr, 1 - alpha, overlay, alpha, 0)
 
 
 def colorize_disparity(disp_float):
+    """
+    Colorize disparity for visualization.
+    """
     disp = disp_float.copy()
     disp[disp < 0] = 0
     mx = float(np.max(disp)) if disp.size else 0.0
@@ -102,10 +95,81 @@ def colorize_disparity(disp_float):
     return cv2.applyColorMap(disp_norm, cv2.COLORMAP_JET)
 
 
-def disparity_to_depth_approx(disp, baseline_m=0.075, focal_px=700.0):
+def compute_disparity_basic(left_bgr, right_bgr):
     """
-    Approximate depth (meters): Z = f * B / disparity
-    For your talk: call this "approximate metric depth" unless you use calibration.
+    Basic OpenCV SGBM disparity (fallback).
+    """
+    left_gray = cv2.cvtColor(left_bgr, cv2.COLOR_BGR2GRAY)
+    right_gray = cv2.cvtColor(right_bgr, cv2.COLOR_BGR2GRAY)
+
+    min_disp = 0
+    num_disp = 192   # divisible by 16
+    block_size = 7   # odd
+
+    sgbm = cv2.StereoSGBM_create(
+        minDisparity=min_disp,
+        numDisparities=num_disp,
+        blockSize=block_size,
+        P1=8 * block_size * block_size,
+        P2=32 * block_size * block_size,
+        disp12MaxDiff=1,
+        uniquenessRatio=12,
+        speckleWindowSize=120,
+        speckleRange=2,
+        preFilterCap=31,
+        mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+    )
+
+    disp = sgbm.compute(left_gray, right_gray).astype(np.float32) / 16.0
+    return disp
+
+
+def compute_disparity_wls(left_bgr, right_bgr):
+    """
+    SGBM + WLS filtering (MUCH cleaner). Requires opencv-contrib-python.
+    Falls back to basic if not available.
+    """
+    if not HAS_XIMGPROC:
+        return compute_disparity_basic(left_bgr, right_bgr)
+
+    left_gray = cv2.cvtColor(left_bgr, cv2.COLOR_BGR2GRAY)
+    right_gray = cv2.cvtColor(right_bgr, cv2.COLOR_BGR2GRAY)
+
+    min_disp = 0
+    num_disp = 192
+    block_size = 7
+
+    left_matcher = cv2.StereoSGBM_create(
+        minDisparity=min_disp,
+        numDisparities=num_disp,
+        blockSize=block_size,
+        P1=8 * block_size * block_size,
+        P2=32 * block_size * block_size,
+        disp12MaxDiff=1,
+        uniquenessRatio=12,
+        speckleWindowSize=120,
+        speckleRange=2,
+        preFilterCap=31,
+        mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+    )
+    right_matcher = cv2.ximgproc.createRightMatcher(left_matcher)
+
+    dispL = left_matcher.compute(left_gray, right_gray).astype(np.int16)
+    dispR = right_matcher.compute(right_gray, left_gray).astype(np.int16)
+
+    wls = cv2.ximgproc.createDisparityWLSFilter(left_matcher)
+    wls.setLambda(8000)        # try 5000–12000
+    wls.setSigmaColor(1.5)     # try 1.0–2.0
+
+    filtered = wls.filter(dispL, left_gray, None, dispR)
+    disp = filtered.astype(np.float32) / 16.0
+    return disp
+
+
+def disparity_to_depth_approx(disp, baseline_m=BASELINE_M, focal_px=FOCAL_PX):
+    """
+    Approx depth map (meters-ish) from disparity: Z = f*B/d
+    Not fully calibrated unless you use real intrinsics/baseline.
     """
     depth = np.zeros_like(disp, dtype=np.float32)
     valid = disp > 1.0
@@ -115,22 +179,33 @@ def disparity_to_depth_approx(disp, baseline_m=0.075, focal_px=700.0):
 
 
 def depth_to_grayscale(depth_m, max_m=30.0):
+    """
+    Near = bright, far = dark.
+    """
     d = depth_m.copy()
     d[d < 0] = 0
     d[d > max_m] = max_m
     if max_m <= 0:
         return np.zeros_like(d, dtype=np.uint8)
-    gray = (255.0 * (1.0 - (d / max_m))).astype(np.uint8)  # near=bright
+    gray = (255.0 * (1.0 - (d / max_m))).astype(np.uint8)
     return gray
+
+
+def overlay_disparity_on_rgb(rgb_bgr, disp_color_bgr, alpha=0.45):
+    """
+    Heatmap overlay on RGB for an intuitive "depth perception" view.
+    """
+    return cv2.addWeighted(rgb_bgr, 1 - alpha, disp_color_bgr, alpha, 0)
 
 
 def main():
     ensure_outdir()
     loader = StereoKittiLoader(DATAROOT, size=RESIZE)
-    print("[debug] stereo loader created")
+    print("[debug] stereo loader created (ximgproc/WLS =", HAS_XIMGPROC, ")")
 
     sobel_on = False
     show_disp = True
+    overlay_on = True  # best demo mode
 
     paused = False
     step_once = False
@@ -148,32 +223,41 @@ def main():
 
             t, left, right = result
 
-            # Per-view Sobel overlay (like your triplet demo)
+            # Compute disparity (WLS if available)
+            disp = compute_disparity_wls(left, right) if show_disp or overlay_on else None
+            disp_color = colorize_disparity(disp) if disp is not None else None
+
+            # Prepare left/right display
+            left_view = left
+            right_view = right
+
+            # Optional Sobel overlay ON TOP of RGB
             if sobel_on:
                 left_edges = sobel_gpu_edges(left)
                 right_edges = sobel_gpu_edges(right)
-                left_disp = cv2.cvtColor(left_edges, cv2.COLOR_GRAY2BGR)
-                right_disp = cv2.cvtColor(right_edges, cv2.COLOR_GRAY2BGR)
-            else:
-                left_disp, right_disp = left, right
+                left_view = overlay_edges_on_rgb(left_view, left_edges, alpha=0.45)
+                right_view = overlay_edges_on_rgb(right_view, right_edges, alpha=0.45)
 
-            put_label(left_disp, "LEFT (stereo)")
-            put_label(right_disp, "RIGHT (stereo)")
+            # Optional disparity heatmap overlay on left RGB (most intuitive)
+            if overlay_on and disp_color is not None:
+                left_view = overlay_disparity_on_rgb(left_view, disp_color, alpha=0.40)
 
-            panels = [left_disp, right_disp]
+            put_label(left_view, "LEFT (stereo)")
+            put_label(right_view, "RIGHT (stereo)")
+
+            panels = [left_view, right_view]
+
             center_depth = None
 
-            if show_disp:
-                disp = compute_disparity_sgbm(left, right)
-                disp_color = colorize_disparity(disp)
+            if show_disp and disp_color is not None:
                 put_label(disp_color, "DISPARITY (px)")
 
-                depth = disparity_to_depth_approx(disp, baseline_m=0.075, focal_px=700.0)
+                depth = disparity_to_depth_approx(disp)
                 depth_gray = depth_to_grayscale(depth, max_m=30.0)
                 depth_bgr = cv2.cvtColor(depth_gray, cv2.COLOR_GRAY2BGR)
                 put_label(depth_bgr, "DEPTH approx (near=bright)")
 
-                # Simple distance readout: center pixel (demo-friendly)
+                # Demo-friendly readout (approx)
                 h, w = depth.shape
                 center_depth = float(depth[h // 2, w // 2])
 
@@ -187,11 +271,14 @@ def main():
 
             put_label(
                 tiled,
-                f"frame={t}   FPS~{fps:.1f}   Sobel={'ON' if sobel_on else 'OFF'}   Disp={'ON' if show_disp else 'OFF'}",
+                f"frame={t}   FPS~{fps:.1f}   Sobel={'ON' if sobel_on else 'OFF'}   Disp={'ON' if show_disp else 'OFF'}   Overlay={'ON' if overlay_on else 'OFF'}",
                 20, 60
             )
+
             if center_depth is not None and center_depth > 0:
-                put_label(tiled, f"Center depth ≈ {center_depth:.2f} m", 20, 90)
+                put_label(tiled, f"Center depth (approx) ≈ {center_depth:.2f} m", 20, 90)
+            else:
+                put_label(tiled, "Center depth (approx) ≈ N/A", 20, 90)
 
             cv2.imshow("Stereo Depth Demo", tiled)
 
@@ -210,6 +297,8 @@ def main():
             sobel_on = not sobel_on
         if key == ord("d"):
             show_disp = not show_disp
+        if key == ord("o"):
+            overlay_on = not overlay_on
         if key == ord("r"):
             loader.restart()
         if key == ord("s"):

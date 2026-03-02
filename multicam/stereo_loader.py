@@ -21,10 +21,8 @@ class StereoKittiLoader:
       dataroot/image_3/... (right)
 
     Pairing strategy:
-      1) If left/right have matching relative paths, use that.
-      2) Otherwise fall back to pairing by sorted index (best for hand-picked sets).
-
-    Returns: (t, left_bgr, right_bgr)
+      1) Match by relative path (works for KITTI / DrivingStereo if structure mirrors)
+      2) Fallback: pair by sorted index (best for manual small sets)
     """
     def __init__(self, dataroot, size=(640, 360)):
         self.dataroot = dataroot
@@ -46,7 +44,7 @@ class StereoKittiLoader:
         if not self.right_files:
             raise FileNotFoundError(f"No images found in {self.right_dir}")
 
-        # Build a right lookup by relative path (for datasets that match structure)
+        # Map right images by relative path
         self.right_rel_map = {}
         for r in self.right_files:
             rel = os.path.relpath(r, self.right_dir)
@@ -58,15 +56,14 @@ class StereoKittiLoader:
         self.idx = 0
 
     def next(self):
-        # Iterate left frames in order; pair with matching right if possible, else by index
         while self.idx < len(self.left_files):
             lpath = self.left_files[self.idx]
             rel = os.path.relpath(lpath, self.left_dir)
 
-            # First try: same relative path
+            # Try matching by relative path
             rpath = self.right_rel_map.get(rel, None)
 
-            # Fallback: pair by index (works for manual 10-image sets)
+            # Fallback: match by index
             if rpath is None:
                 if self.idx >= len(self.right_files):
                     return None
