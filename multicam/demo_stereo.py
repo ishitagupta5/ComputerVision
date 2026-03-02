@@ -70,8 +70,8 @@ def compute_disparity_sgbm(left_bgr, right_bgr):
 
     # Demo defaults
     min_disp = 0
-    num_disp = 96      # divisible by 16
-    block_size = 7     # odd
+    num_disp = 192      # divisible by 16
+    block_size = 9     # odd
 
     sgbm = cv2.StereoSGBM_create(
         minDisparity=min_disp,
@@ -80,8 +80,8 @@ def compute_disparity_sgbm(left_bgr, right_bgr):
         P1=8 * block_size * block_size,
         P2=32 * block_size * block_size,
         disp12MaxDiff=1,
-        uniquenessRatio=10,
-        speckleWindowSize=80,
+        uniquenessRatio=15,
+        speckleWindowSize=120,
         speckleRange=2,
         preFilterCap=31,
         mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
