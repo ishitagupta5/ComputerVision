@@ -43,7 +43,7 @@ except Exception as e:
 
 
 # ✅ set this to your dataset root that contains image_2 and image_3
-DATAROOT = "../data/drivingstereo"   # change if needed
+DATAROOT = "../data"   # change if needed
 RESIZE = (640, 360)
 OUTDIR = "./outputs"
 
