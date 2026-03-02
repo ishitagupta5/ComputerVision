@@ -78,7 +78,7 @@ def overlay_edges_on_rgb(frame_bgr, edges_gray, alpha=0.45):
     """
     overlay = frame_bgr.copy()
     edges_gray = cv2.erode(edges_gray, np.ones((2,2), np.uint8), iterations=1)
-    overlay[edges_gray > 0] = (255, 255, 255)
+    overlay[edges_gray > 0] = (0, 255, 0)
     return cv2.addWeighted(frame_bgr, 1 - alpha, overlay, alpha, 0)
 
 
