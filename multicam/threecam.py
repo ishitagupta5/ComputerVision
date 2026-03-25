@@ -1,9 +1,14 @@
 import cv2
 import numpy as np
 import depthai as dai
+import sys
+import time
+from ultralytics import YOLO
+
+# ---- YOLO model ----
+model = YOLO("yolo11x.pt")
 
 # ---- GPU Sobel import ----
-import sys
 sys.path.append("../GPU")
 
 GPU_AVAILABLE = True
@@ -30,6 +35,18 @@ def overlay_edges_on_rgb(frame_bgr, edges_gray, alpha=0.45):
     return cv2.addWeighted(frame_bgr, 1 - alpha, overlay, alpha, 0)
 
 
+def draw_yolo_boxes(frame, results):
+    r = results[0]
+    for box in r.boxes:
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        cls = int(box.cls)
+        conf = float(box.conf)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame, f"{r.names[cls]} {conf:.2f}", (x1, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    return frame
+
+
 device = dai.Device(dai.UsbSpeed.HIGH)
 with dai.Pipeline(device) as pipeline:
     cam_color = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
@@ -42,6 +59,11 @@ with dai.Pipeline(device) as pipeline:
     q_right = cam_right.requestOutput((640, 480)).createOutputQueue()
 
     sobel_on = False
+    yolo_on = False
+
+    frame_count = 0
+    start_time = time.time()
+    fps_display = 0.0
 
     pipeline.start()
     while pipeline.isRunning():
@@ -49,20 +71,29 @@ with dai.Pipeline(device) as pipeline:
         left_frame = q_left.get().getCvFrame()
         right_frame = q_right.get().getCvFrame()
 
-        # Convert mono to BGR for display
+        # Convert mono to BGR
         if len(left_frame.shape) == 2:
             left_frame = cv2.cvtColor(left_frame, cv2.COLOR_GRAY2BGR)
         if len(right_frame.shape) == 2:
             right_frame = cv2.cvtColor(right_frame, cv2.COLOR_GRAY2BGR)
 
-        # Sobel edge overlay on all three feeds
+        # Sobel edge overlay
         if sobel_on:
-            left_edges = sobel_gpu_edges(left_frame)
-            color_edges = sobel_gpu_edges(color_frame)
-            right_edges = sobel_gpu_edges(right_frame)
-            left_frame = overlay_edges_on_rgb(left_frame, left_edges, alpha=0.45)
-            color_frame = overlay_edges_on_rgb(color_frame, color_edges, alpha=0.45)
-            right_frame = overlay_edges_on_rgb(right_frame, right_edges, alpha=0.45)
+            left_frame = overlay_edges_on_rgb(left_frame, sobel_gpu_edges(left_frame))
+            color_frame = overlay_edges_on_rgb(color_frame, sobel_gpu_edges(color_frame))
+            right_frame = overlay_edges_on_rgb(right_frame, sobel_gpu_edges(right_frame))
+
+        # YOLO detection on all three
+        if yolo_on:
+            left_frame = draw_yolo_boxes(left_frame, model(left_frame, verbose=False))
+            color_frame = draw_yolo_boxes(color_frame, model(color_frame, verbose=False))
+            right_frame = draw_yolo_boxes(right_frame, model(right_frame, verbose=False))
+
+        # FPS
+        frame_count += 1
+        elapsed = time.time() - start_time
+        if elapsed > 0:
+            fps_display = frame_count / elapsed
 
         # Resize to fit screen
         small_size = (427, 320)
@@ -75,10 +106,12 @@ with dai.Pipeline(device) as pipeline:
         cv2.putText(color_frame, "COLOR", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         cv2.putText(right_frame, "RIGHT", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        # Sobel status
-        status = f"Sobel: {'ON' if sobel_on else 'OFF'} [press 'e' to toggle]"
         combined = np.hstack([left_frame, color_frame, right_frame])
-        cv2.putText(combined, status, (10, combined.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        # Status bar
+        status = f"FPS: {fps_display:.1f} | Sobel: {'ON' if sobel_on else 'OFF'} [e] | YOLO: {'ON' if yolo_on else 'OFF'} [y] | Quit [q]"
+        cv2.putText(combined, status, (10, combined.shape[0] - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         cv2.imshow("OAK-D Lite - Left | Color | Right", combined)
 
@@ -88,3 +121,6 @@ with dai.Pipeline(device) as pipeline:
         if key == ord('e'):
             sobel_on = not sobel_on
             print(f"[Sobel {'ON' if sobel_on else 'OFF'}]")
+        if key == ord('y'):
+            yolo_on = not yolo_on
+            print(f"[YOLO {'ON' if yolo_on else 'OFF'}]")
