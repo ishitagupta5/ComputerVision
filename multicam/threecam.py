@@ -273,17 +273,24 @@ def draw_yolo_boxes_with_depth(frame, results, depth_m):
 
         dist_ft = get_object_depth_feet(depth_m, x1, y1, x2, y2)
 
+        # Box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-        if dist_ft is not None:
-            label = f"{name} {conf:.2f} | {dist_ft:.1f} ft"
-        else:
-            label = f"{name} {conf:.2f}"
-
+        # YOLO label above box (green)
+        label = f"{name} {conf:.2f}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
         cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw, y1), (0, 0, 0), -1)
         cv2.putText(frame, label, (x1, y1 - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        # Depth label below box (cyan)
+        if dist_ft is not None:
+            depth_label = f"{dist_ft:.1f} ft"
+            (dw, dh), _ = cv2.getTextSize(depth_label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            dy = y2 + dh + 8
+            cv2.rectangle(frame, (x1, y2), (x1 + dw, dy + 4), (0, 0, 0), -1)
+            cv2.putText(frame, depth_label, (x1, dy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
     return frame
 
