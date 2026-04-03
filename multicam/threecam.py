@@ -190,25 +190,73 @@ if not OMP_AVAILABLE:
     )
 
 
-# ============================================================
-# DEPTH PIPELINE FUNCTIONS
-# ============================================================
-
+def census_transform(img, kernel_size=7):
+    """
+    Census transform: encode each pixel as a binary string of comparisons
+    with its neighbors. This captures local structure (including edges)
+    while being robust to lighting/exposure differences between cameras.
+ 
+    Each pixel becomes a binary pattern:
+      - Compare center pixel to each neighbor
+      - 1 if center > neighbor, 0 otherwise
+      - Pack into an integer
+ 
+    kernel_size: neighborhood window (must be odd, 7 or 9 recommended)
+    Returns a uint8 image suitable for SGBM matching.
+    """
+    h, w = img.shape
+    half = kernel_size // 2
+    census = np.zeros((h, w), dtype=np.uint32)
+ 
+    center = img[half:h - half, half:w - half].astype(np.int16)
+ 
+    bit = 0
+    for dy in range(-half, half + 1):
+        for dx in range(-half, half + 1):
+            if dy == 0 and dx == 0:
+                continue
+            neighbor = img[half + dy:h - half + dy,
+                           half + dx:w - half + dx].astype(np.int16)
+            census[half:h - half, half:w - half] |= (
+                (center > neighbor).astype(np.uint32) << bit
+            )
+            bit += 1
+            if bit >= 32:
+                break
+        if bit >= 32:
+            break
+ 
+    # Map to uint8 range for SGBM compatibility
+    max_val = float(np.max(census)) if np.max(census) > 0 else 1.0
+    result = ((census / max_val) * 255).astype(np.uint8)
+    return result
+ 
+ 
 def compute_depth_map(left_gray, right_gray):
-    """Full stereo pipeline: rectify → disparity → depth."""
+    """
+    Full stereo pipeline: rectify -> census transform -> disparity -> depth.
+ 
+    The census transform step replaces raw grayscale with a structural
+    encoding that combines edge and texture information, making SGBM
+    matching more robust to lighting differences between cameras.
+    """
     h, w = left_gray.shape
-
+ 
     if OMP_AVAILABLE:
         # OpenMP-parallelized rectification
         left_rect = np.zeros_like(left_gray)
         right_rect = np.zeros_like(right_gray)
         stereo_lib.rectify_remap(left_gray, left_rect, map1_left, map2_left, h, w)
         stereo_lib.rectify_remap(right_gray, right_rect, map1_right, map2_right, h, w)
-
-        # OpenMP-parallelized disparity (8 threads)
+ 
+        # Census transform preprocessing
+        left_census = census_transform(left_rect)
+        right_census = census_transform(right_rect)
+ 
+        # OpenMP-parallelized disparity on census-transformed images
         disparity = np.zeros((h, w), dtype=np.float32)
-        stereo_lib.stereo_disparity_sgbm(left_rect, right_rect, disparity, h, w, NUM_DISP, BLOCK_SIZE)
-
+        stereo_lib.stereo_disparity_sgbm(left_census, right_census, disparity, h, w, NUM_DISP, BLOCK_SIZE)
+ 
         # OpenMP-parallelized depth conversion
         depth = np.zeros((h, w), dtype=np.float32)
         stereo_lib.disparity_to_depth(disparity, depth, h, w,
@@ -218,12 +266,17 @@ def compute_depth_map(left_gray, right_gray):
         # OpenCV fallback
         left_rect = cv2.remap(left_gray, map1_left, map2_left, cv2.INTER_LINEAR)
         right_rect = cv2.remap(right_gray, map1_right, map2_right, cv2.INTER_LINEAR)
-        disp_raw = sgbm.compute(left_rect, right_rect).astype(np.float32) / 16.0
+ 
+        # Census transform preprocessing
+        left_census = census_transform(left_rect)
+        right_census = census_transform(right_rect)
+ 
+        disp_raw = sgbm.compute(left_census, right_census).astype(np.float32) / 16.0
         disparity = disp_raw
         depth = np.zeros_like(disparity)
         valid = disparity > 1.0
         depth[valid] = (focal_length_px * baseline_m) / disparity[valid]
-
+ 
     return depth, disparity
 
 
