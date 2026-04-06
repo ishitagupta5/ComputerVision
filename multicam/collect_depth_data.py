@@ -349,6 +349,12 @@ with dai.Pipeline(device) as pipeline:
             current_depth_m, current_disparity = compute_depth_map(left_gray, right_gray)
             current_depth_ms = (time.time() - t_depth) * 1000
 
+            # DEBUG
+            valid_disp = current_disparity[current_disparity > 0]
+            if len(valid_disp) > 0:
+                print(f"[DEBUG] Disp — min:{valid_disp.min():.1f} max:{valid_disp.max():.1f} "
+                      f"median:{np.median(valid_disp):.1f} | Expected ~59 at 2ft")
+
         # Sobel
         if sobel_on:
             color_frame = overlay_edges_on_rgb(color_frame, sobel_gpu_edges(color_frame))
