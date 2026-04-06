@@ -1,7 +1,11 @@
 """
 collect_depth_data.py — Stereo depth accuracy data collection tool
-  DEBUG VERSION: no census transform, no LR check, no WLS
-  Testing if original simple SGBM gives correct depth
+  Simple SGBM + Temporal Smoothing (no census, no LR, no WLS)
+
+Setup:
+  1. Place camera on tripod, mark floor at 0 point
+  2. Mark distances: 2ft, 4ft, 6ft, 8ft, 10ft, 12ft, 15ft, 20ft
+  3. Have someone stand at each mark facing the camera
 
 Controls:
   s = save reading (will prompt for actual distance in terminal)
@@ -10,6 +14,11 @@ Controls:
   d = toggle depth on/off
   m = toggle disparity heatmap
   q = quit and save CSV
+
+Output:
+  depth_accuracy_data.csv with columns:
+    timestamp, actual_ft, reported_ft, error_ft, error_pct,
+    object, confidence, condition, depth_compute_ms, x1, y1, x2, y2
 """
 
 import cv2
@@ -80,16 +89,6 @@ if OMP_AVAILABLE:
     ]
     stereo_lib.stereo_disparity_sgbm.restype = None
 
-    stereo_lib.stereo_disparity_sgbm_lr.argtypes = [
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
-        ctypes.c_int, ctypes.c_int,
-        ctypes.c_int, ctypes.c_int,
-        ctypes.c_float,
-    ]
-    stereo_lib.stereo_disparity_sgbm_lr.restype = None
-
     stereo_lib.disparity_to_depth.argtypes = [
         npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
         npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
@@ -115,14 +114,6 @@ if OMP_AVAILABLE:
         ctypes.c_float,
     ]
     stereo_lib.get_median_depth_roi.restype = ctypes.c_float
-
-    stereo_lib.census_transform.argtypes = [
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        ctypes.c_int, ctypes.c_int,
-        ctypes.c_int,
-    ]
-    stereo_lib.census_transform.restype = None
 
 # ============================================================
 # STEREO CALIBRATION
@@ -175,7 +166,39 @@ NUM_DISP = 128
 BLOCK_SIZE = 7
 
 # ============================================================
-# DEPTH COMPUTATION — SIMPLE SGBM ONLY (no census, no LR, no WLS)
+# TEMPORAL SMOOTHING
+# ============================================================
+class TemporalSmoother:
+    def __init__(self, num_frames=3, weight_decay=0.7):
+        self.num_frames = num_frames
+        self.weight_decay = weight_decay
+        self.depth_history = []
+
+    def smooth(self, depth_m):
+        self.depth_history.append(depth_m.copy())
+        if len(self.depth_history) > self.num_frames:
+            self.depth_history.pop(0)
+
+        if len(self.depth_history) == 1:
+            return depth_m
+
+        result = np.zeros_like(depth_m)
+        total_weight = np.zeros_like(depth_m)
+
+        for i, frame in enumerate(reversed(self.depth_history)):
+            weight = self.weight_decay ** i
+            valid = frame > 0.1
+            result[valid] += frame[valid] * weight
+            total_weight[valid] += weight
+
+        nonzero = total_weight > 0
+        result[nonzero] /= total_weight[nonzero]
+        return result
+
+depth_smoother = TemporalSmoother(num_frames=3, weight_decay=0.7)
+
+# ============================================================
+# DEPTH COMPUTATION — Simple SGBM + Temporal Smoothing
 # ============================================================
 
 def compute_depth_map(left_gray, right_gray):
@@ -211,7 +234,10 @@ def compute_depth_map(left_gray, right_gray):
         valid = disparity_filtered > 1.0
         depth[valid] = (focal_length_px * baseline_m) / disparity_filtered[valid]
 
-    return depth, disparity_filtered
+    # Temporal smoothing
+    depth_smoothed = depth_smoother.smooth(depth)
+
+    return depth_smoothed, disparity_filtered
 
 
 def get_object_depth_feet(depth_m, x1, y1, x2, y2):
@@ -299,11 +325,11 @@ with dai.Pipeline(device) as pipeline:
     pipeline.start()
     print("\n" + "=" * 50)
     print("  DEPTH ACCURACY DATA COLLECTION")
-    print("  ** DEBUG: Simple SGBM only (no census/LR/WLS) **")
+    print("  SGBM + Temporal Smoothing (3 frames)")
     print("=" * 50)
     print(f"  Condition: {current_condition}")
     print(f"  Output: {CSV_FILE}")
-    print(f"  Engine: {'OpenMP simple SGBM' if OMP_AVAILABLE else 'OpenCV'}")
+    print(f"  Engine: {'OpenMP SGBM + Temporal' if OMP_AVAILABLE else 'OpenCV + Temporal'}")
     print(f"  Expected disparity at 2ft: ~{focal_length_px * baseline_m / 0.6096:.0f} px")
     print("=" * 50)
     print("Controls:")
@@ -405,8 +431,8 @@ with dai.Pipeline(device) as pipeline:
         cv2.putText(combined, status, (10, combined.shape[0] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
 
-        cv2.putText(combined, "DEBUG: Simple SGBM — Press S to save", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        cv2.putText(combined, "Press S to save a reading", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
 
         cv2.imshow("Depth Data Collection", combined)
 
@@ -507,4 +533,3 @@ with dai.Pipeline(device) as pipeline:
 
     cv2.destroyAllWindows()
     print(f"\nDone! {len(data_rows)} readings saved to {CSV_FILE}")
-    
