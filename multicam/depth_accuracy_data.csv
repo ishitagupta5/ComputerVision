@@ -1,0 +1,5 @@
+timestamp,actual_ft,reported_ft,error_ft,error_pct,object,confidence,condition,depth_compute_ms,x1,y1,x2,y2
+2026-04-05T21:24:09.889538,2.00,25.34,23.34,1167.2,person,0.960,indoor_normal,975.0,181,30,477,473
+2026-04-05T21:24:50.336868,4.00,23.72,19.72,493.0,person,0.948,indoor_normal,953.6,262,122,413,475
+2026-04-05T21:25:40.166515,8.00,22.03,14.03,175.3,person,0.931,indoor_normal,990.4,301,177,387,475
+2026-04-05T21:26:49.824457,12.00,28.46,16.46,137.2,person,0.945,indoor_normal,1278.0,301,198,363,395
