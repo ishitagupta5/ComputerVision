@@ -507,3 +507,4 @@ with dai.Pipeline(device) as pipeline:
 
     cv2.destroyAllWindows()
     print(f"\nDone! {len(data_rows)} readings saved to {CSV_FILE}")
+    
