@@ -3,11 +3,7 @@ threecam.py — OAK-D Lite triple camera pipeline
   - 3 live feeds (LEFT | COLOR | RIGHT)
   - Sobel edge overlay (GPU or CPU fallback)
   - YOLO object detection
-  - OpenMP-parallelized stereo depth (C++ library, 8 threads, slab decomposition)
-  - Census transform preprocessing for robust stereo matching
-  - WLS filtering for clean disparity
-  - Left-right consistency check for rejecting bad matches
-  - Temporal smoothing for stable depth readings
+  - OpenMP-parallelized stereo depth (C++ library, 8 threads)
   - Distance in feet per detected object
 
 Compile the C++ library first:
@@ -85,64 +81,44 @@ except OSError as e:
     OMP_AVAILABLE = False
 
 if OMP_AVAILABLE:
-    # stereo_disparity_sgbm (simple L->R, backward compatible)
+    # stereo_disparity_sgbm
     stereo_lib.stereo_disparity_sgbm.argtypes = [
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
-        ctypes.c_int, ctypes.c_int,
-        ctypes.c_int, ctypes.c_int,
+        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),   # left
+        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),   # right
+        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'), # disparity out
+        ctypes.c_int, ctypes.c_int,  # height, width
+        ctypes.c_int, ctypes.c_int,  # num_disparities, block_size
     ]
     stereo_lib.stereo_disparity_sgbm.restype = None
 
-    # stereo_disparity_sgbm_lr (L->R + R->L with consistency check)
-    stereo_lib.stereo_disparity_sgbm_lr.argtypes = [
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
-        ctypes.c_int, ctypes.c_int,
-        ctypes.c_int, ctypes.c_int,
-        ctypes.c_float,
-    ]
-    stereo_lib.stereo_disparity_sgbm_lr.restype = None
-
     # disparity_to_depth
     stereo_lib.disparity_to_depth.argtypes = [
-        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
-        ctypes.c_int, ctypes.c_int,
-        ctypes.c_float, ctypes.c_float,
+        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),  # disparity
+        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),  # depth out
+        ctypes.c_int, ctypes.c_int,  # height, width
+        ctypes.c_float, ctypes.c_float,  # focal_px, baseline_m
     ]
     stereo_lib.disparity_to_depth.restype = None
 
     # rectify_remap
     stereo_lib.rectify_remap.argtypes = [
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
-        ctypes.c_int, ctypes.c_int,
+        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),    # src
+        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),    # dst
+        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),  # map_x
+        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),  # map_y
+        ctypes.c_int, ctypes.c_int,  # height, width
     ]
     stereo_lib.rectify_remap.restype = None
 
     # get_median_depth_roi
     stereo_lib.get_median_depth_roi.argtypes = [
-        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
-        ctypes.c_int,
-        ctypes.c_int, ctypes.c_int,
-        ctypes.c_int, ctypes.c_int,
-        ctypes.c_float,
+        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),  # depth
+        ctypes.c_int,  # img_width
+        ctypes.c_int, ctypes.c_int,  # x1, y1
+        ctypes.c_int, ctypes.c_int,  # x2, y2
+        ctypes.c_float,  # margin
     ]
     stereo_lib.get_median_depth_roi.restype = ctypes.c_float
-
-    # census_transform
-    stereo_lib.census_transform.argtypes = [
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
-        ctypes.c_int, ctypes.c_int,
-        ctypes.c_int,
-    ]
-    stereo_lib.census_transform.restype = None
 
 
 # ============================================================
@@ -199,7 +175,7 @@ NUM_DISP = 128
 BLOCK_SIZE = 7
 
 if not OMP_AVAILABLE:
-    sgbm_left = cv2.StereoSGBM_create(
+    sgbm = cv2.StereoSGBM_create(
         minDisparity=0,
         numDisparities=NUM_DISP,
         blockSize=BLOCK_SIZE,
@@ -212,161 +188,43 @@ if not OMP_AVAILABLE:
         preFilterCap=31,
         mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
     )
-    sgbm_right = cv2.ximgproc.createRightMatcher(sgbm_left)
-
-# WLS filter (works with both OMP and OpenCV paths)
-wls_filter = cv2.ximgproc.createDisparityWLSFilterGeneric(False)
-wls_filter.setLambda(8000.0)
-wls_filter.setSigmaColor(1.5)
-
-
-# ============================================================
-# TEMPORAL SMOOTHING — averages depth over recent frames
-# to stabilize distance readings and reduce flicker
-# ============================================================
-class TemporalSmoother:
-    def __init__(self, num_frames=3, weight_decay=0.7):
-        """
-        num_frames: how many past frames to keep
-        weight_decay: exponential weight for older frames
-            (most recent = 1.0, previous = 0.7, before that = 0.49, etc.)
-        """
-        self.num_frames = num_frames
-        self.weight_decay = weight_decay
-        self.depth_history = []
-
-    def smooth(self, depth_m):
-        """Add new depth frame and return temporally smoothed result."""
-        self.depth_history.append(depth_m.copy())
-        if len(self.depth_history) > self.num_frames:
-            self.depth_history.pop(0)
-
-        if len(self.depth_history) == 1:
-            return depth_m
-
-        result = np.zeros_like(depth_m)
-        total_weight = np.zeros_like(depth_m)
-
-        for i, frame in enumerate(reversed(self.depth_history)):
-            weight = self.weight_decay ** i
-            valid = frame > 0.1
-            result[valid] += frame[valid] * weight
-            total_weight[valid] += weight
-
-        nonzero = total_weight > 0
-        result[nonzero] /= total_weight[nonzero]
-        return result
-
-
-depth_smoother = TemporalSmoother(num_frames=3, weight_decay=0.7)
 
 
 # ============================================================
 # DEPTH PIPELINE FUNCTIONS
 # ============================================================
 
-def census_transform_py(img, kernel_size=7):
-    """Python fallback census transform (used when C++ lib not available)."""
-    h, w = img.shape
-    half = kernel_size // 2
-    census = np.zeros((h, w), dtype=np.uint32)
-
-    center = img[half:h - half, half:w - half].astype(np.int16)
-
-    bit = 0
-    for dy in range(-half, half + 1):
-        for dx in range(-half, half + 1):
-            if dy == 0 and dx == 0:
-                continue
-            neighbor = img[half + dy:h - half + dy,
-                           half + dx:w - half + dx].astype(np.int16)
-            census[half:h - half, half:w - half] |= (
-                (center > neighbor).astype(np.uint32) << bit
-            )
-            bit += 1
-            if bit >= 32:
-                break
-        if bit >= 32:
-            break
-
-    max_val = float(np.max(census)) if np.max(census) > 0 else 1.0
-    result = ((census / max_val) * 255).astype(np.uint8)
-    return result
-
-
 def compute_depth_map(left_gray, right_gray):
-    """
-    Full stereo pipeline with all four optimizations:
-
-      1. Rectify (slab-parallelized)
-      2. Census transform (slab-parallelized)
-      3. SGBM disparity with left-right consistency check
-      4. WLS filtering for edge-preserving smoothing
-      5. Depth conversion (slab-parallelized)
-      6. Temporal smoothing across frames
-
-    Returns temporally-smoothed depth map and WLS-filtered disparity.
-    """
+    """Full stereo pipeline: rectify → disparity → depth."""
     h, w = left_gray.shape
 
     if OMP_AVAILABLE:
-        # Slab-parallelized rectification
+        # OpenMP-parallelized rectification
         left_rect = np.zeros_like(left_gray)
         right_rect = np.zeros_like(right_gray)
         stereo_lib.rectify_remap(left_gray, left_rect, map1_left, map2_left, h, w)
         stereo_lib.rectify_remap(right_gray, right_rect, map1_right, map2_right, h, w)
 
-        # Slab-parallelized census transform (C++)
-        left_census = np.zeros_like(left_rect)
-        right_census = np.zeros_like(right_rect)
-        stereo_lib.census_transform(left_rect, left_census, h, w, 7)
-        stereo_lib.census_transform(right_rect, right_census, h, w, 7)
+        # OpenMP-parallelized disparity (8 threads)
+        disparity = np.zeros((h, w), dtype=np.float32)
+        stereo_lib.stereo_disparity_sgbm(left_rect, right_rect, disparity, h, w, NUM_DISP, BLOCK_SIZE)
 
-        # Slab-parallelized SGBM with left-right consistency check
-        disparity_raw = np.zeros((h, w), dtype=np.float32)
-        stereo_lib.stereo_disparity_sgbm_lr(left_census, right_census, disparity_raw,
-                                             h, w, NUM_DISP, BLOCK_SIZE,
-                                             ctypes.c_float(1.5))
-
-        # WLS filtering — smooths disparity while preserving edges
-        # Convert to int16 format that WLS expects
-        disp_int16 = (disparity_raw * 16.0).astype(np.int16)
-        disparity_filtered = wls_filter.filter(
-            disp_int16, left_rect, None, None
-        ).astype(np.float32) / 16.0
-        disparity_filtered[disparity_filtered < 0] = 0
-
-        # Slab-parallelized depth conversion
+        # OpenMP-parallelized depth conversion
         depth = np.zeros((h, w), dtype=np.float32)
-        stereo_lib.disparity_to_depth(disparity_filtered, depth, h, w,
+        stereo_lib.disparity_to_depth(disparity, depth, h, w,
                                        ctypes.c_float(focal_length_px),
                                        ctypes.c_float(baseline_m))
     else:
         # OpenCV fallback
         left_rect = cv2.remap(left_gray, map1_left, map2_left, cv2.INTER_LINEAR)
         right_rect = cv2.remap(right_gray, map1_right, map2_right, cv2.INTER_LINEAR)
+        disp_raw = sgbm.compute(left_rect, right_rect).astype(np.float32) / 16.0
+        disparity = disp_raw
+        depth = np.zeros_like(disparity)
+        valid = disparity > 1.0
+        depth[valid] = (focal_length_px * baseline_m) / disparity[valid]
 
-        left_census = census_transform_py(left_rect)
-        right_census = census_transform_py(right_rect)
-
-        # L->R and R->L disparity for consistency check
-        disp_left = sgbm_left.compute(left_census, right_census)
-        disp_right = sgbm_right.compute(left_census, right_census)
-
-        # WLS filter with left-right check built in
-        disparity_filtered = wls_filter.filter(
-            disp_left, left_rect, None, disp_right
-        ).astype(np.float32) / 16.0
-        disparity_filtered[disparity_filtered < 0] = 0
-
-        depth = np.zeros_like(disparity_filtered)
-        valid = disparity_filtered > 1.0
-        depth[valid] = (focal_length_px * baseline_m) / disparity_filtered[valid]
-
-    # Temporal smoothing — stabilize depth across frames
-    depth_smoothed = depth_smoother.smooth(depth)
-
-    return depth_smoothed, disparity_filtered if OMP_AVAILABLE else disparity_filtered
+    return depth, disparity
 
 
 def get_object_depth_feet(depth_m, x1, y1, x2, y2):
@@ -464,10 +322,7 @@ with dai.Pipeline(device) as pipeline:
     pipeline.start()
     print("\n========================================")
     print("  OAK-D Lite — Stereo Depth Pipeline")
-    print("  OpenMP threads: 8 (slab decomposition)")
-    print("  Preprocessing: Census Transform")
-    print("  Post-processing: WLS + LR check")
-    print("  Temporal smoothing: 3 frames")
+    print("  OpenMP threads: 8")
     print("  Depth formula: Z = (f × B) / d")
     print(f"  f = {focal_length_px:.2f} px")
     print(f"  B = {baseline_m * 100:.2f} cm")
@@ -494,7 +349,7 @@ with dai.Pipeline(device) as pipeline:
         if len(right_frame.shape) == 2:
             right_frame = cv2.cvtColor(right_frame, cv2.COLOR_GRAY2BGR)
 
-        # Stereo depth computation (all optimizations applied)
+        # Stereo depth computation (OpenMP parallelized)
         depth_m = None
         disparity = None
         if depth_on or show_disparity:
@@ -555,9 +410,9 @@ with dai.Pipeline(device) as pipeline:
         status = (f"FPS: {fps_display:.1f} | Sobel[e]: {'ON' if sobel_on else 'OFF'} | "
                   f"YOLO[y]: {'ON' if yolo_on else 'OFF'} | Depth[d]: {'ON' if depth_on else 'OFF'} | "
                   f"Disparity[m]: {'ON' if show_disparity else 'OFF'} | "
-                  f"Engine: {'OMP x8 + WLS + LR + Temporal' if OMP_AVAILABLE else 'OpenCV + WLS'} | Quit[q]")
+                  f"Engine: {'OpenMP x8' if OMP_AVAILABLE else 'OpenCV'} | Quit[q]")
         cv2.putText(combined, status, (10, combined.shape[0] - 15),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
         # Depth timing
         if (depth_on or show_disparity) and depth_m is not None:
