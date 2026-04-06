@@ -355,8 +355,8 @@ for i, (label, value) in enumerate(stats_text):
               fontsize=11, color="white", fontweight="bold", ha="right", va="top",
               fontfamily="monospace")
     if i < len(stats_text) - 1:
-        d_ax.axhline(y=y - 0.03, xmin=0.05, xmax=0.95,
-                     color="#21262D", lw=0.5, transform=d_ax.transAxes)
+        d_ax.plot([0.05, 0.95], [y - 0.03, y - 0.03],
+                  color="#21262D", lw=0.5, transform=d_ax.transAxes, clip_on=False)
 
 fig4.tight_layout(rect=[0, 0, 1, 0.93])
 fig4.savefig("graph_dashboard.png")
