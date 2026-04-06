@@ -1,12 +1,11 @@
 """
 analyze_depth_data.py — Generate accuracy graphs from collected data
 
-Reads depth_accuracy_data.csv and produces:
-  1. Scatter plot: actual vs reported distance (with perfect accuracy line)
-  2. Error bar chart: absolute error at each distance
-  3. Error percentage chart: % error at each distance
-  4. Condition comparison: accuracy across lighting conditions
-  5. Summary statistics table
+Reads depth_accuracy_data.csv (with trial column) and produces:
+  1. Scatter plot: actual vs reported distance (color-coded by trial)
+  2. Error bar chart: mean absolute error at each distance (across trials)
+  3. Error percentage chart: mean % error at each distance
+  4. Summary statistics table
 
 Usage:
   python analyze_depth_data.py
@@ -38,6 +37,7 @@ with open(csv_file, "r") as f:
             "confidence": float(row["confidence"]),
             "condition": row["condition"],
             "depth_ms": float(row["depth_compute_ms"]),
+            "trial": int(row.get("trial", 1)),
         })
 
 if len(data) == 0:
@@ -51,30 +51,42 @@ reported = np.array([d["reported_ft"] for d in data])
 errors = np.array([d["error_ft"] for d in data])
 abs_errors = np.abs(errors)
 pct_errors = np.array([d["error_pct"] for d in data])
-conditions = [d["condition"] for d in data]
+trials = np.array([d["trial"] for d in data])
+compute_times = np.array([d["depth_ms"] for d in data])
+
+unique_trials = sorted(set(trials))
+num_trials = len(unique_trials)
 
 # ============================================================
-# FIGURE 1: ACTUAL vs REPORTED (scatter + perfect line)
+# FIGURE 1: ACTUAL vs REPORTED (color-coded by trial)
 # ============================================================
 fig1, ax1 = plt.subplots(figsize=(8, 8))
 
-ax1.scatter(actual, reported, c="steelblue", s=80, alpha=0.7, edgecolors="navy", label="Measurements")
+trial_colors = ["#2196F3", "#4CAF50", "#FF9800", "#E91E63", "#9C27B0"]
+trial_markers = ["o", "s", "D", "^", "v"]
 
-# Perfect accuracy line
-max_dist = max(max(actual), max(reported)) * 1.1
-ax1.plot([0, max_dist], [0, max_dist], "r--", linewidth=2, label="Perfect accuracy")
+for i, t in enumerate(unique_trials):
+    mask = trials == t
+    ax1.scatter(actual[mask], reported[mask],
+                c=trial_colors[i % len(trial_colors)],
+                marker=trial_markers[i % len(trial_markers)],
+                s=90, alpha=0.8, edgecolors="black", linewidths=0.5,
+                label=f"Trial {t}", zorder=3)
 
-# Best fit line
+max_dist = max(max(actual), max(reported)) * 1.15
+ax1.plot([0, max_dist], [0, max_dist], "r--", linewidth=2, label="Perfect accuracy", zorder=1)
+
 coeffs = np.polyfit(actual, reported, 1)
 fit_x = np.linspace(0, max_dist, 100)
 fit_y = np.polyval(coeffs, fit_x)
+r_squared = np.corrcoef(actual, reported)[0, 1] ** 2
 ax1.plot(fit_x, fit_y, "g-", linewidth=1.5, alpha=0.7,
-         label=f"Best fit: y = {coeffs[0]:.2f}x + {coeffs[1]:.2f}")
+         label=f"Best fit: y = {coeffs[0]:.2f}x + {coeffs[1]:.2f}  (R²={r_squared:.4f})", zorder=2)
 
 ax1.set_xlabel("Actual Distance (ft)", fontsize=13)
 ax1.set_ylabel("Reported Distance (ft)", fontsize=13)
 ax1.set_title("Stereo Depth Accuracy: Actual vs Reported", fontsize=15, fontweight="bold")
-ax1.legend(fontsize=11)
+ax1.legend(fontsize=10, loc="upper left")
 ax1.set_xlim(0, max_dist)
 ax1.set_ylim(0, max_dist)
 ax1.set_aspect("equal")
@@ -85,10 +97,9 @@ fig1.savefig("graph_actual_vs_reported.png", dpi=150)
 print("Saved: graph_actual_vs_reported.png")
 
 # ============================================================
-# FIGURE 2: ABSOLUTE ERROR BY DISTANCE
+# FIGURE 2: ABSOLUTE ERROR BY DISTANCE (mean + std across trials)
 # ============================================================
 
-# Group by actual distance
 dist_groups = defaultdict(list)
 for d in data:
     key = round(d["actual_ft"])
@@ -100,17 +111,19 @@ std_errors = [np.std(dist_groups[d]) for d in distances_sorted]
 
 fig2, ax2 = plt.subplots(figsize=(10, 6))
 
+bar_colors = ["#4CAF50" if m < 0.5 else "#FF9800" if m < 1.0 else "#F44336" for m in mean_errors]
+
 bars = ax2.bar(range(len(distances_sorted)), mean_errors, yerr=std_errors,
-               color="steelblue", edgecolor="navy", capsize=5, alpha=0.8)
+               color=bar_colors, edgecolor="black", capsize=6, alpha=0.85, linewidth=0.8)
 ax2.set_xticks(range(len(distances_sorted)))
-ax2.set_xticklabels([f"{d} ft" for d in distances_sorted], fontsize=11)
+ax2.set_xticklabels([f"{d} ft" for d in distances_sorted], fontsize=12)
 ax2.set_xlabel("Actual Distance", fontsize=13)
-ax2.set_ylabel("Absolute Error (ft)", fontsize=13)
-ax2.set_title("Depth Estimation Error by Distance", fontsize=15, fontweight="bold")
+ax2.set_ylabel("Mean Absolute Error (ft)", fontsize=13)
+ax2.set_title(f"Depth Estimation Error by Distance (n={num_trials} trials)", fontsize=15, fontweight="bold")
 ax2.grid(True, axis="y", alpha=0.3)
 
 for i, (mean, std) in enumerate(zip(mean_errors, std_errors)):
-    ax2.text(i, mean + std + 0.1, f"{mean:.2f}", ha="center", fontsize=9, fontweight="bold")
+    ax2.text(i, mean + std + 0.05, f"{mean:.2f} ft", ha="center", fontsize=10, fontweight="bold")
 
 fig2.tight_layout()
 fig2.savefig("graph_error_by_distance.png", dpi=150)
@@ -130,71 +143,70 @@ std_pct = [np.std(pct_groups[d]) for d in distances_sorted]
 
 fig3, ax3 = plt.subplots(figsize=(10, 6))
 
+pct_colors = ["#4CAF50" if m < 5 else "#FF9800" if m < 10 else "#F44336" for m in mean_pct]
+
 ax3.bar(range(len(distances_sorted)), mean_pct, yerr=std_pct,
-        color="coral", edgecolor="darkred", capsize=5, alpha=0.8)
+        color=pct_colors, edgecolor="black", capsize=6, alpha=0.85, linewidth=0.8)
 ax3.set_xticks(range(len(distances_sorted)))
-ax3.set_xticklabels([f"{d} ft" for d in distances_sorted], fontsize=11)
+ax3.set_xticklabels([f"{d} ft" for d in distances_sorted], fontsize=12)
 ax3.set_xlabel("Actual Distance", fontsize=13)
-ax3.set_ylabel("Error (%)", fontsize=13)
-ax3.set_title("Depth Estimation Error % by Distance", fontsize=15, fontweight="bold")
+ax3.set_ylabel("Mean Error (%)", fontsize=13)
+ax3.set_title(f"Depth Estimation Error % by Distance (n={num_trials} trials)", fontsize=15, fontweight="bold")
 ax3.grid(True, axis="y", alpha=0.3)
-ax3.axhline(y=10, color="green", linestyle="--", alpha=0.5, label="10% threshold")
-ax3.legend(fontsize=11)
+ax3.axhline(y=10, color="gray", linestyle="--", alpha=0.5, label="10% threshold")
+ax3.axhline(y=5, color="green", linestyle="--", alpha=0.4, label="5% threshold")
+ax3.legend(fontsize=10)
 
 for i, (mean, std) in enumerate(zip(mean_pct, std_pct)):
-    ax3.text(i, mean + std + 0.5, f"{mean:.1f}%", ha="center", fontsize=9, fontweight="bold")
+    ax3.text(i, mean + std + 0.4, f"{mean:.1f}%", ha="center", fontsize=10, fontweight="bold")
 
 fig3.tight_layout()
 fig3.savefig("graph_error_pct_by_distance.png", dpi=150)
 print("Saved: graph_error_pct_by_distance.png")
 
 # ============================================================
-# FIGURE 4: ACCURACY BY LIGHTING CONDITION
+# FIGURE 4: PER-TRIAL COMPARISON (grouped bars)
 # ============================================================
 
-unique_conditions = list(set(conditions))
-if len(unique_conditions) > 1:
-    cond_errors = defaultdict(list)
-    for d in data:
-        cond_errors[d["condition"]].append(abs(d["error_ft"]))
+fig4, ax4 = plt.subplots(figsize=(10, 6))
 
-    cond_sorted = sorted(cond_errors.keys())
-    cond_means = [np.mean(cond_errors[c]) for c in cond_sorted]
-    cond_stds = [np.std(cond_errors[c]) for c in cond_sorted]
-    cond_counts = [len(cond_errors[c]) for c in cond_sorted]
+bar_width = 0.25
+x_pos = np.arange(len(distances_sorted))
 
-    fig4, ax4 = plt.subplots(figsize=(10, 6))
+for i, t in enumerate(unique_trials):
+    trial_data = [d for d in data if d["trial"] == t]
+    trial_errors = []
+    for dist in distances_sorted:
+        matching = [abs(d["error_ft"]) for d in trial_data if round(d["actual_ft"]) == dist]
+        trial_errors.append(matching[0] if matching else 0)
+    ax4.bar(x_pos + i * bar_width, trial_errors, bar_width,
+            color=trial_colors[i % len(trial_colors)], edgecolor="black",
+            linewidth=0.5, alpha=0.85, label=f"Trial {t}")
 
-    colors = plt.cm.Set2(np.linspace(0, 1, len(cond_sorted)))
-    bars = ax4.bar(range(len(cond_sorted)), cond_means, yerr=cond_stds,
-                   color=colors, edgecolor="gray", capsize=5, alpha=0.8)
-    ax4.set_xticks(range(len(cond_sorted)))
-    ax4.set_xticklabels([c.replace("_", "\n") for c in cond_sorted], fontsize=10)
-    ax4.set_xlabel("Lighting Condition", fontsize=13)
-    ax4.set_ylabel("Mean Absolute Error (ft)", fontsize=13)
-    ax4.set_title("Depth Accuracy by Lighting Condition", fontsize=15, fontweight="bold")
-    ax4.grid(True, axis="y", alpha=0.3)
+ax4.set_xticks(x_pos + bar_width * (num_trials - 1) / 2)
+ax4.set_xticklabels([f"{d} ft" for d in distances_sorted], fontsize=12)
+ax4.set_xlabel("Actual Distance", fontsize=13)
+ax4.set_ylabel("Absolute Error (ft)", fontsize=13)
+ax4.set_title("Per-Trial Error Comparison", fontsize=15, fontweight="bold")
+ax4.legend(fontsize=10)
+ax4.grid(True, axis="y", alpha=0.3)
 
-    for i, (mean, n) in enumerate(zip(cond_means, cond_counts)):
-        ax4.text(i, mean + cond_stds[i] + 0.1, f"{mean:.2f}ft\n(n={n})",
-                 ha="center", fontsize=9)
-
-    fig4.tight_layout()
-    fig4.savefig("graph_accuracy_by_condition.png", dpi=150)
-    print("Saved: graph_accuracy_by_condition.png")
-else:
-    print("Only one condition found — skipping condition comparison graph")
+fig4.tight_layout()
+fig4.savefig("graph_per_trial_comparison.png", dpi=150)
+print("Saved: graph_per_trial_comparison.png")
 
 # ============================================================
-# FIGURE 5: COMPUTE TIME vs DISTANCE
+# FIGURE 5: COMPUTE TIME
 # ============================================================
 
 fig5, ax5 = plt.subplots(figsize=(8, 5))
-compute_times = [d["depth_ms"] for d in data]
-ax5.scatter(actual, compute_times, c="purple", s=60, alpha=0.6)
+ax5.scatter(actual, compute_times, c="purple", s=60, alpha=0.6, edgecolors="black", linewidths=0.5)
+ax5.axhline(y=np.mean(compute_times), color="red", linestyle="--", alpha=0.5,
+            label=f"Mean: {np.mean(compute_times):.0f} ms")
 ax5.set_xlabel("Actual Distance (ft)", fontsize=13)
 ax5.set_ylabel("Depth Compute Time (ms)", fontsize=13)
 ax5.set_title("Compute Time vs Distance", fontsize=15, fontweight="bold")
+ax5.legend(fontsize=10)
 ax5.grid(True, alpha=0.3)
 
 fig5.tight_layout()
@@ -209,6 +221,7 @@ print("\n" + "=" * 60)
 print("  SUMMARY STATISTICS")
 print("=" * 60)
 print(f"  Total readings:        {len(data)}")
+print(f"  Trials:                {num_trials}")
 print(f"  Distance range:        {min(actual):.1f} - {max(actual):.1f} ft")
 print(f"  Mean absolute error:   {np.mean(abs_errors):.3f} ft")
 print(f"  Median absolute error: {np.median(abs_errors):.3f} ft")
@@ -216,32 +229,44 @@ print(f"  Std deviation:         {np.std(abs_errors):.3f} ft")
 print(f"  Mean error %:          {np.mean(pct_errors):.1f}%")
 print(f"  Max error:             {max(abs_errors):.3f} ft at {actual[np.argmax(abs_errors)]:.1f} ft")
 print(f"  Best accuracy:         {min(abs_errors):.3f} ft at {actual[np.argmin(abs_errors)]:.1f} ft")
-print(f"  R² (fit quality):      {np.corrcoef(actual, reported)[0,1]**2:.4f}")
-print(f"  Mean compute time:     {np.mean(compute_times):.1f} ms")
-print(f"  Conditions tested:     {', '.join(unique_conditions)}")
+print(f"  R² (fit quality):      {r_squared:.4f}")
+print(f"  Mean compute time:     {np.mean(compute_times):.0f} ms")
 print("=" * 60)
 
-# Save summary to text file
+print("\n  PER-DISTANCE BREAKDOWN:")
+print(f"  {'Dist':>6s}  {'Mean Err':>9s}  {'Std':>7s}  {'Mean %':>7s}  {'n':>3s}")
+print("  " + "-" * 40)
+for d in distances_sorted:
+    errs = dist_groups[d]
+    pcts = pct_groups[d]
+    print(f"  {d:>4d}ft  {np.mean(errs):>8.3f}ft  {np.std(errs):>6.3f}  {np.mean(pcts):>6.1f}%  {len(errs):>3d}")
+
+# Save summary
 with open("depth_accuracy_summary.txt", "w") as f:
     f.write("STEREO DEPTH ACCURACY SUMMARY\n")
-    f.write("=" * 40 + "\n")
+    f.write(f"{'=' * 50}\n")
+    f.write(f"Camera: OAK-D Lite\n")
+    f.write(f"Method: SGBM stereo matching (OpenMP parallelized)\n")
+    f.write(f"Focal length: 470.38 px\n")
+    f.write(f"Baseline: 7.49 cm\n")
+    f.write(f"Resolution: 640x480\n")
+    f.write(f"{'=' * 50}\n\n")
     f.write(f"Total readings:        {len(data)}\n")
+    f.write(f"Trials:                {num_trials}\n")
     f.write(f"Distance range:        {min(actual):.1f} - {max(actual):.1f} ft\n")
     f.write(f"Mean absolute error:   {np.mean(abs_errors):.3f} ft\n")
     f.write(f"Median absolute error: {np.median(abs_errors):.3f} ft\n")
     f.write(f"Std deviation:         {np.std(abs_errors):.3f} ft\n")
     f.write(f"Mean error %:          {np.mean(pct_errors):.1f}%\n")
-    f.write(f"R²:                    {np.corrcoef(actual, reported)[0,1]**2:.4f}\n")
-    f.write(f"Mean compute time:     {np.mean(compute_times):.1f} ms\n")
-    f.write(f"Conditions:            {', '.join(unique_conditions)}\n")
-    f.write("\nPER-DISTANCE BREAKDOWN:\n")
+    f.write(f"R²:                    {r_squared:.4f}\n")
+    f.write(f"Mean compute time:     {np.mean(compute_times):.0f} ms\n")
+    f.write(f"\nPER-DISTANCE BREAKDOWN:\n")
+    f.write(f"{'Dist':>6s}  {'Mean Err':>9s}  {'Std':>7s}  {'Mean %':>7s}  {'n':>3s}\n")
+    f.write("-" * 40 + "\n")
     for d in distances_sorted:
         errs = dist_groups[d]
         pcts = pct_groups[d]
-        f.write(f"  {d:>3d} ft: mean_err={np.mean(errs):.3f}ft "
-                f"std={np.std(errs):.3f}ft "
-                f"pct={np.mean(pcts):.1f}% "
-                f"n={len(errs)}\n")
+        f.write(f"{d:>4d}ft  {np.mean(errs):>8.3f}ft  {np.std(errs):>6.3f}  {np.mean(pcts):>6.1f}%  {len(errs):>3d}\n")
 
 print("\nSaved: depth_accuracy_summary.txt")
 print("\nAll graphs saved! Open the PNG files to view them.")
