@@ -1,10 +1,7 @@
 """
 collect_depth_data.py — Stereo depth accuracy data collection tool
-
-Setup:
-  1. Place camera on tripod, mark floor at 0 point
-  2. Mark distances: 2ft, 4ft, 6ft, 8ft, 10ft, 12ft, 15ft, 20ft
-  3. Have someone stand at each mark facing the camera
+  DEBUG VERSION: no census transform, no LR check, no WLS
+  Testing if original simple SGBM gives correct depth
 
 Controls:
   s = save reading (will prompt for actual distance in terminal)
@@ -13,11 +10,6 @@ Controls:
   d = toggle depth on/off
   m = toggle disparity heatmap
   q = quit and save CSV
-
-Output:
-  depth_accuracy_data.csv with columns:
-    timestamp, actual_ft, reported_ft, object, confidence,
-    condition, depth_compute_ms, x1, y1, x2, y2
 """
 
 import cv2
@@ -79,6 +71,15 @@ except OSError as e:
     OMP_AVAILABLE = False
 
 if OMP_AVAILABLE:
+    stereo_lib.stereo_disparity_sgbm.argtypes = [
+        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
+        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
+        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
+        ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int,
+    ]
+    stereo_lib.stereo_disparity_sgbm.restype = None
+
     stereo_lib.stereo_disparity_sgbm_lr.argtypes = [
         npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
         npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
@@ -137,12 +138,10 @@ M_right = np.array([
     [0.0, 0.0, 1.0]
 ])
 
-D_left = np.zeros(5)
-
-# D_left = np.array([234.60887145996094, -623.8788452148438, -0.0005015762872062624,
-#                     0.00030968087958171964, 426.3470153808594, 235.93760681152344,
-#                     -627.5354614257812, 429.06951904296875, 0.0, 0.0, 0.0, 0.0,
-#                     0.005349033512175083, 0.0020748842507600784])
+D_left = np.array([234.60887145996094, -623.8788452148438, -0.0005015762872062624,
+                    0.00030968087958171964, 426.3470153808594, 235.93760681152344,
+                    -627.5354614257812, 429.06951904296875, 0.0, 0.0, 0.0, 0.0,
+                    0.005349033512175083, 0.0020748842507600784])
 D_right = np.array([-2.113563060760498, 0.003960954025387764, -0.0019331664079800248,
                      -4.7757501306477934e-05, 1.580187201499939, -2.129826784133911,
                      0.04710356146097183, 1.5510843992233276, 0.0, 0.0, 0.0, 0.0,
@@ -166,19 +165,17 @@ R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
 focal_length_px = P1[0, 0]
 baseline_m = abs(T_meters[0])
 
+print(f"[Stereo] Focal length: {focal_length_px:.2f} px")
+print(f"[Stereo] Baseline: {baseline_m * 100:.2f} cm ({baseline_m:.4f} m)")
+
 map1_left, map2_left = cv2.initUndistortRectifyMap(M_left, D_left, R1, P1, IMG_SIZE, cv2.CV_32FC1)
 map1_right, map2_right = cv2.initUndistortRectifyMap(M_right, D_right, R2, P2, IMG_SIZE, cv2.CV_32FC1)
 
 NUM_DISP = 128
 BLOCK_SIZE = 7
 
-# WLS filter
-wls_filter = cv2.ximgproc.createDisparityWLSFilterGeneric(False)
-wls_filter.setLambda(8000.0)
-wls_filter.setSigmaColor(1.5)
-
 # ============================================================
-# DEPTH COMPUTATION
+# DEPTH COMPUTATION — SIMPLE SGBM ONLY (no census, no LR, no WLS)
 # ============================================================
 
 def compute_depth_map(left_gray, right_gray):
@@ -190,26 +187,15 @@ def compute_depth_map(left_gray, right_gray):
         stereo_lib.rectify_remap(left_gray, left_rect, map1_left, map2_left, h, w)
         stereo_lib.rectify_remap(right_gray, right_rect, map1_right, map2_right, h, w)
 
-        left_census = np.zeros_like(left_rect)
-        right_census = np.zeros_like(right_rect)
-        stereo_lib.census_transform(left_rect, left_census, h, w, 7)
-        stereo_lib.census_transform(right_rect, right_census, h, w, 7)
-
         disparity_raw = np.zeros((h, w), dtype=np.float32)
-        stereo_lib.stereo_disparity_sgbm_lr(left_census, right_census, disparity_raw,
-                                             h, w, NUM_DISP, BLOCK_SIZE,
-                                             ctypes.c_float(1.5))
-
-        disp_int16 = (disparity_raw * 16.0).astype(np.int16)
-        disparity_filtered = wls_filter.filter(
-            disp_int16, left_rect, None, None
-        ).astype(np.float32) / 16.0
-        disparity_filtered[disparity_filtered < 0] = 0
+        stereo_lib.stereo_disparity_sgbm(left_rect, right_rect, disparity_raw,
+                                          h, w, NUM_DISP, BLOCK_SIZE)
 
         depth = np.zeros((h, w), dtype=np.float32)
-        stereo_lib.disparity_to_depth(disparity_filtered, depth, h, w,
+        stereo_lib.disparity_to_depth(disparity_raw, depth, h, w,
                                        ctypes.c_float(focal_length_px),
                                        ctypes.c_float(baseline_m))
+        disparity_filtered = disparity_raw
     else:
         left_rect = cv2.remap(left_gray, map1_left, map2_left, cv2.INTER_LINEAR)
         right_rect = cv2.remap(right_gray, map1_right, map2_right, cv2.INTER_LINEAR)
@@ -305,7 +291,6 @@ with dai.Pipeline(device) as pipeline:
     start_time = time.time()
     fps_display = 0.0
 
-    # Current frame state
     current_depth_m = None
     current_disparity = None
     current_results = None
@@ -314,10 +299,12 @@ with dai.Pipeline(device) as pipeline:
     pipeline.start()
     print("\n" + "=" * 50)
     print("  DEPTH ACCURACY DATA COLLECTION")
+    print("  ** DEBUG: Simple SGBM only (no census/LR/WLS) **")
     print("=" * 50)
     print(f"  Condition: {current_condition}")
     print(f"  Output: {CSV_FILE}")
-    print(f"  Engine: {'OpenMP x8 + WLS + LR' if OMP_AVAILABLE else 'OpenCV'}")
+    print(f"  Engine: {'OpenMP simple SGBM' if OMP_AVAILABLE else 'OpenCV'}")
+    print(f"  Expected disparity at 2ft: ~{focal_length_px * baseline_m / 0.6096:.0f} px")
     print("=" * 50)
     print("Controls:")
     print("  s = SAVE reading (then type actual distance)")
@@ -349,11 +336,15 @@ with dai.Pipeline(device) as pipeline:
             current_depth_m, current_disparity = compute_depth_map(left_gray, right_gray)
             current_depth_ms = (time.time() - t_depth) * 1000
 
-            # DEBUG
-            valid_disp = current_disparity[current_disparity > 0]
-            if len(valid_disp) > 0:
-                print(f"[DEBUG] Disp — min:{valid_disp.min():.1f} max:{valid_disp.max():.1f} "
-                      f"median:{np.median(valid_disp):.1f} | Expected ~59 at 2ft")
+            # DEBUG: print disparity stats every 30 frames
+            if frame_count % 30 == 0:
+                valid_disp = current_disparity[current_disparity > 0]
+                if len(valid_disp) > 0:
+                    print(f"[DEBUG] Disp — min:{valid_disp.min():.1f} max:{valid_disp.max():.1f} "
+                          f"median:{np.median(valid_disp):.1f} mean:{np.mean(valid_disp):.1f} "
+                          f"| Expected ~{focal_length_px * baseline_m / 0.6096:.0f} at 2ft")
+                else:
+                    print("[DEBUG] No valid disparity pixels!")
 
         # Sobel
         if sobel_on:
@@ -414,9 +405,8 @@ with dai.Pipeline(device) as pipeline:
         cv2.putText(combined, status, (10, combined.shape[0] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
 
-        # Big instruction text at top
-        cv2.putText(combined, "Press S to save a reading", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
+        cv2.putText(combined, "DEBUG: Simple SGBM — Press S to save", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
         cv2.imshow("Depth Data Collection", combined)
 
@@ -458,7 +448,6 @@ with dai.Pipeline(device) as pipeline:
                 print("[WARNING] No objects detected — make sure you're in frame")
                 continue
 
-            # Find the largest detected object (most likely the person)
             best_box = None
             best_area = 0
             for box in r.boxes:
@@ -477,6 +466,13 @@ with dai.Pipeline(device) as pipeline:
             if reported_ft is None:
                 print("[WARNING] Could not compute depth for detected object")
                 continue
+
+            # DEBUG: print disparity in the bounding box region
+            roi_disp = current_disparity[y1:y2, x1:x2]
+            valid_roi = roi_disp[roi_disp > 0]
+            if len(valid_roi) > 0:
+                print(f"  [DEBUG BOX] Disp in box — min:{valid_roi.min():.1f} max:{valid_roi.max():.1f} "
+                      f"median:{np.median(valid_roi):.1f}")
 
             print(f"\n--- SAVE READING ---")
             print(f"  Detected: {name} ({conf:.2f})")
