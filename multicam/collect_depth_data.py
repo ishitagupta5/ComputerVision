@@ -1,7 +1,7 @@
 """
 collect_depth_data.py — Stereo depth accuracy data collection tool
-  DEBUG VERSION: Simple SGBM + WLS filtering only
-  Testing WLS in isolation
+  DEBUG VERSION: no census transform, no LR check, no WLS
+  Testing if original simple SGBM gives correct depth
 
 Controls:
   s = save reading (will prompt for actual distance in terminal)
@@ -80,6 +80,16 @@ if OMP_AVAILABLE:
     ]
     stereo_lib.stereo_disparity_sgbm.restype = None
 
+    stereo_lib.stereo_disparity_sgbm_lr.argtypes = [
+        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
+        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
+        npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
+        ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int,
+        ctypes.c_float,
+    ]
+    stereo_lib.stereo_disparity_sgbm_lr.restype = None
+
     stereo_lib.disparity_to_depth.argtypes = [
         npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
         npct.ndpointer(dtype=np.float32, ndim=2, flags='C_CONTIGUOUS'),
@@ -105,6 +115,14 @@ if OMP_AVAILABLE:
         ctypes.c_float,
     ]
     stereo_lib.get_median_depth_roi.restype = ctypes.c_float
+
+    stereo_lib.census_transform.argtypes = [
+        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
+        npct.ndpointer(dtype=np.uint8, ndim=2, flags='C_CONTIGUOUS'),
+        ctypes.c_int, ctypes.c_int,
+        ctypes.c_int,
+    ]
+    stereo_lib.census_transform.restype = None
 
 # ============================================================
 # STEREO CALIBRATION
@@ -156,13 +174,8 @@ map1_right, map2_right = cv2.initUndistortRectifyMap(M_right, D_right, R2, P2, I
 NUM_DISP = 128
 BLOCK_SIZE = 7
 
-# WLS filter
-wls_filter = cv2.ximgproc.createDisparityWLSFilterGeneric(False)
-wls_filter.setLambda(8000.0)
-wls_filter.setSigmaColor(1.5)
-
 # ============================================================
-# DEPTH COMPUTATION — Simple SGBM + WLS
+# DEPTH COMPUTATION — SIMPLE SGBM ONLY (no census, no LR, no WLS)
 # ============================================================
 
 def compute_depth_map(left_gray, right_gray):
@@ -174,22 +187,15 @@ def compute_depth_map(left_gray, right_gray):
         stereo_lib.rectify_remap(left_gray, left_rect, map1_left, map2_left, h, w)
         stereo_lib.rectify_remap(right_gray, right_rect, map1_right, map2_right, h, w)
 
-        # Simple SGBM (no census, no LR check)
         disparity_raw = np.zeros((h, w), dtype=np.float32)
         stereo_lib.stereo_disparity_sgbm(left_rect, right_rect, disparity_raw,
                                           h, w, NUM_DISP, BLOCK_SIZE)
 
-        # WLS filtering
-        disp_int16 = (disparity_raw * 16.0).astype(np.int16)
-        disparity_filtered = wls_filter.filter(
-            disp_int16, left_rect, None, None
-        ).astype(np.float32) / 16.0
-        disparity_filtered[disparity_filtered < 0] = 0
-
         depth = np.zeros((h, w), dtype=np.float32)
-        stereo_lib.disparity_to_depth(disparity_filtered, depth, h, w,
+        stereo_lib.disparity_to_depth(disparity_raw, depth, h, w,
                                        ctypes.c_float(focal_length_px),
                                        ctypes.c_float(baseline_m))
+        disparity_filtered = disparity_raw
     else:
         left_rect = cv2.remap(left_gray, map1_left, map2_left, cv2.INTER_LINEAR)
         right_rect = cv2.remap(right_gray, map1_right, map2_right, cv2.INTER_LINEAR)
@@ -200,11 +206,7 @@ def compute_depth_map(left_gray, right_gray):
             speckleRange=2, preFilterCap=31, mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         )
         disp_raw = sgbm.compute(left_rect, right_rect).astype(np.float32) / 16.0
-        disp_int16 = (disp_raw * 16.0).astype(np.int16)
-        disparity_filtered = wls_filter.filter(
-            disp_int16, left_rect, None, None
-        ).astype(np.float32) / 16.0
-        disparity_filtered[disparity_filtered < 0] = 0
+        disparity_filtered = disp_raw
         depth = np.zeros_like(disparity_filtered)
         valid = disparity_filtered > 1.0
         depth[valid] = (focal_length_px * baseline_m) / disparity_filtered[valid]
@@ -297,11 +299,11 @@ with dai.Pipeline(device) as pipeline:
     pipeline.start()
     print("\n" + "=" * 50)
     print("  DEPTH ACCURACY DATA COLLECTION")
-    print("  ** TEST: Simple SGBM + WLS **")
+    print("  ** DEBUG: Simple SGBM only (no census/LR/WLS) **")
     print("=" * 50)
     print(f"  Condition: {current_condition}")
     print(f"  Output: {CSV_FILE}")
-    print(f"  Engine: {'OpenMP SGBM + WLS' if OMP_AVAILABLE else 'OpenCV + WLS'}")
+    print(f"  Engine: {'OpenMP simple SGBM' if OMP_AVAILABLE else 'OpenCV'}")
     print(f"  Expected disparity at 2ft: ~{focal_length_px * baseline_m / 0.6096:.0f} px")
     print("=" * 50)
     print("Controls:")
@@ -403,8 +405,8 @@ with dai.Pipeline(device) as pipeline:
         cv2.putText(combined, status, (10, combined.shape[0] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
 
-        cv2.putText(combined, "TEST: SGBM + WLS — Press S to save", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
+        cv2.putText(combined, "DEBUG: Simple SGBM — Press S to save", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
         cv2.imshow("Depth Data Collection", combined)
 
@@ -505,3 +507,4 @@ with dai.Pipeline(device) as pipeline:
 
     cv2.destroyAllWindows()
     print(f"\nDone! {len(data_rows)} readings saved to {CSV_FILE}")
+    
