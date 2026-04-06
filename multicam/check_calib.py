@@ -4,6 +4,11 @@ import numpy as np
 device = dai.Device(dai.UsbSpeed.HIGH)
 calib = device.readCalibration()
 
+model_left = calib.getDistortionModel(dai.CameraBoardSocket.CAM_B)
+model_right = calib.getDistortionModel(dai.CameraBoardSocket.CAM_C)
+print(f"Left distortion model: {model_left}")
+print(f"Right distortion model: {model_right}")
+
 dist_left = calib.getDistortionCoefficients(dai.CameraBoardSocket.CAM_B)
 dist_right = calib.getDistortionCoefficients(dai.CameraBoardSocket.CAM_C)
 
