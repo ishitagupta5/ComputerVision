@@ -1,9 +1,11 @@
 """
-threecam_capture.py — OAK-D Lite triple camera pipeline + POSTER FRAME CAPTURE
+threecam_capture.py — OAK-D Lite triple camera pipeline + MULTI-SHOT CAPTURE
   Same as threecam.py, PLUS:
-  - Press 's' to save all 6 pipeline stages as PNGs into ./poster_frames/
-  - Stage PNGs are named 01_capture.png, 02_rectify.png, etc.
-  - The script prints the folder path after each capture.
+  - Press 's' to save the final pipeline output (stage 06: YOLO boxes + distance in ft)
+  - Each press saves a new numbered file: 06_distance_1.png, 06_distance_2.png, ...
+  - Keep pressing 's' as many times as you want, then pick the best one afterward.
+  - Files land in ./poster_frames/
+  - (Single-shot mode for all 6 stages is still available — press 'S' (shift+s))
 
 Compile the C++ library first (same as threecam.py):
   Windows (MinGW):  g++ -O3 -fopenmp -shared -o stereo_depth_omp.dll stereo_depth_omp.cpp
@@ -15,19 +17,18 @@ Controls:
   y = toggle YOLO detection
   d = toggle depth calculation (auto-enables YOLO)
   m = toggle disparity heatmap panel
-  s = SAVE POSTER FRAMES  (all 6 pipeline stages -> ./poster_frames/)
+  s = SAVE ONE SHOT of the distance frame (06_distance_N.png)  <-- spam this at your car
+  S = save ALL 6 pipeline stages (old behavior, overwrites 01-06)
   q = quit
 
-HOW TO USE FOR POSTER FRAME CAPTURE:
+HOW TO USE FOR CAR SHOT:
   1. Plug in the OAK-D Lite.
   2. Run:   python threecam_capture.py
-  3. Press 'd' once to turn on depth + YOLO (this auto-populates all stages).
-  4. Press 'm' once to turn on the disparity heatmap.
-  5. Point the camera at a scene with 1-3 detectable objects
-     (a person, a chair, a laptop — anything YOLO knows) at 3-10 ft away.
-  6. Press 's' to save the 6 frames.
-  7. Press 'q' to quit.
-  8. Zip up ./poster_frames/ and upload it — you now have all 6 stage images.
+  3. Press 'd' (auto-enables YOLO + depth).
+  4. Point the camera at your car from a few distances.
+  5. Press 's' as many times as you want — each press saves a new numbered PNG.
+  6. Press 'q' to quit.
+  7. Go into ./poster_frames/ and pick your favorite 06_distance_N.png.
 """
 
 import cv2
@@ -223,7 +224,6 @@ def compute_depth_map(left_gray, right_gray):
         valid = disparity > 1.0
         depth[valid] = (focal_length_px * baseline_m) / disparity[valid]
 
-    # Also return rectified frames so the poster-capture step can save them
     return depth, disparity, left_rect, right_rect
 
 
@@ -262,18 +262,15 @@ def colorize_disparity(disp):
 
 
 def colorize_depth(depth_m, max_m=8.0):
-    """Heatmap of depth in meters — near=bright/hot, far=dark/cool."""
     d = depth_m.copy()
     d[d <= 0] = 0
     d[d > max_m] = max_m
     norm = (d / max_m * 255.0).astype(np.uint8)
-    # invert so close objects are bright (red/yellow) and far objects are dark (blue)
     norm_inv = 255 - norm
     return cv2.applyColorMap(norm_inv, cv2.COLORMAP_TURBO)
 
 
 def draw_yolo_boxes_no_depth(frame, results):
-    """YOLO boxes only — no distance label (used for stage 5)."""
     out = frame.copy()
     r = results[0]
     for box in r.boxes:
@@ -327,81 +324,74 @@ def draw_yolo_boxes_with_depth(frame, results, depth_m):
 OUTPUT_DIR = "poster_frames"
 
 
-def save_poster_frames(color_frame, left_gray, right_gray, left_rect, right_rect,
-                       disparity, depth_m, yolo_results):
-    """Save the 6 pipeline-stage PNGs to ./poster_frames/.
-    Stage list mirrors what the poster shows, left-to-right:
-      01_capture    — 3 cameras (left | color | right) — the raw input
-      02_rectify    — rectified left + right stacked side by side
-      03_sgbm       — raw disparity heatmap (JET colormap)
-      04_depth      — depth map in meters (TURBO colormap, near=bright, far=dark)
-      05_yolo       — color frame with YOLO boxes + class labels (no distance yet)
-      06_distance   — color frame with YOLO boxes AND distance labels in feet
+def save_distance_shot(color_frame_clean, yolo_results, depth_m, shot_number):
+    """Save ONE numbered distance shot: 06_distance_N.png
+    This is what 's' does — spammable, each press makes a new numbered file.
+    """
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    stage6 = draw_yolo_boxes_with_depth(color_frame_clean.copy(), yolo_results, depth_m)
+    filename = f"06_distance_{shot_number}.png"
+    path = os.path.join(OUTPUT_DIR, filename)
+    cv2.imwrite(path, stage6)
+    print(f"[SAVED] {os.path.abspath(path)}  (shot #{shot_number})")
+
+
+def save_all_poster_frames(color_frame, left_gray, right_gray, left_rect, right_rect,
+                            disparity, depth_m, yolo_results):
+    """Save the 6 pipeline-stage PNGs to ./poster_frames/ (triggered by 'S').
+    This overwrites 01-06 each time.
     """
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # ---- Stage 01: 3 CAMERAS (input capture) ----
-    # Ensure all three are BGR for saving
+    # Stage 01: 3 CAMERAS
     lf = cv2.cvtColor(left_gray, cv2.COLOR_GRAY2BGR) if len(left_gray.shape) == 2 else left_gray
     rf = cv2.cvtColor(right_gray, cv2.COLOR_GRAY2BGR) if len(right_gray.shape) == 2 else right_gray
-    # Annotate
     lf_a = lf.copy(); cv2.putText(lf_a, "LEFT",  (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     cf_a = color_frame.copy(); cv2.putText(cf_a, "COLOR", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     rf_a = rf.copy(); cv2.putText(rf_a, "RIGHT", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     stage1 = np.hstack([lf_a, cf_a, rf_a])
     cv2.imwrite(os.path.join(OUTPUT_DIR, "01_capture.png"), stage1)
 
-    # ---- Stage 02: RECTIFY (left + right rectified side by side) ----
+    # Stage 02: RECTIFY
     lr = cv2.cvtColor(left_rect, cv2.COLOR_GRAY2BGR) if len(left_rect.shape) == 2 else left_rect
     rr = cv2.cvtColor(right_rect, cv2.COLOR_GRAY2BGR) if len(right_rect.shape) == 2 else right_rect
     cv2.putText(lr, "LEFT RECTIFIED",  (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
     cv2.putText(rr, "RIGHT RECTIFIED", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-    # Draw horizontal epipolar lines — rectified pairs should have matching rows
     for y in range(40, lr.shape[0], 60):
         cv2.line(lr, (0, y), (lr.shape[1], y), (0, 180, 255), 1)
         cv2.line(rr, (0, y), (rr.shape[1], y), (0, 180, 255), 1)
     stage2 = np.hstack([lr, rr])
     cv2.imwrite(os.path.join(OUTPUT_DIR, "02_rectify.png"), stage2)
 
-    # ---- Stage 03: SGBM DISPARITY ----
+    # Stage 03: SGBM DISPARITY
     disp_vis = colorize_disparity(disparity)
     cv2.putText(disp_vis, "SGBM DISPARITY", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     cv2.imwrite(os.path.join(OUTPUT_DIR, "03_sgbm.png"), disp_vis)
 
-    # ---- Stage 04: DEPTH (Z = f*B/d) ----
+    # Stage 04: DEPTH
     depth_vis = colorize_depth(depth_m, max_m=8.0)
     cv2.putText(depth_vis, "DEPTH  Z = fB/d", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    # small scale bar
     cv2.putText(depth_vis, "near", (12, depth_vis.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
     cv2.putText(depth_vis, "far",  (depth_vis.shape[1] - 40, depth_vis.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
     cv2.imwrite(os.path.join(OUTPUT_DIR, "04_depth.png"), depth_vis)
 
-    # ---- Stage 05: YOLO (boxes + class, no depth) ----
+    # Stage 05: YOLO (no depth)
     if yolo_results is not None:
         stage5 = draw_yolo_boxes_no_depth(color_frame, yolo_results)
     else:
         stage5 = color_frame.copy()
-        cv2.putText(stage5, "(YOLO off — run with 'y' enabled)", (12, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
     cv2.imwrite(os.path.join(OUTPUT_DIR, "05_yolo.png"), stage5)
 
-    # ---- Stage 06: DISTANCE (boxes + class + distance in feet) ----
+    # Stage 06: DISTANCE
     if yolo_results is not None and depth_m is not None:
-        # Need a clean copy of the color frame because stage5 already has boxes drawn on it
         stage6 = draw_yolo_boxes_with_depth(color_frame.copy(), yolo_results, depth_m)
     else:
         stage6 = color_frame.copy()
-        cv2.putText(stage6, "(Depth off — run with 'd' enabled)", (12, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
     cv2.imwrite(os.path.join(OUTPUT_DIR, "06_distance.png"), stage6)
 
     path = os.path.abspath(OUTPUT_DIR)
     print("\n================================================")
-    print(f"  SAVED 6 POSTER FRAMES to:\n    {path}")
-    print("================================================")
-    for f in ["01_capture.png", "02_rectify.png", "03_sgbm.png",
-              "04_depth.png", "05_yolo.png", "06_distance.png"]:
-        print(f"    {f}")
+    print(f"  SAVED ALL 6 POSTER FRAMES to:\n    {path}")
     print("================================================\n")
 
 
@@ -429,22 +419,37 @@ with dai.Pipeline(device) as pipeline:
     start_time = time.time()
     fps_display = 0.0
 
+    # Counter for numbered distance shots (resumes past any existing files so you don't overwrite)
+    def _next_shot_number():
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        existing = [f for f in os.listdir(OUTPUT_DIR)
+                    if f.startswith("06_distance_") and f.endswith(".png")]
+        nums = []
+        for f in existing:
+            try:
+                n = int(f.replace("06_distance_", "").replace(".png", ""))
+                nums.append(n)
+            except ValueError:
+                continue
+        return (max(nums) + 1) if nums else 1
+
+    shot_counter = _next_shot_number()
+
     pipeline.start()
     print("\n========================================")
     print("  OAK-D Lite — Stereo Depth Pipeline")
-    print("  OpenMP threads: 8")
-    print("  Depth formula: Z = (f × B) / d")
-    print(f"  f = {focal_length_px:.2f} px")
-    print(f"  B = {baseline_m * 100:.2f} cm")
+    print("  MULTI-SHOT CAPTURE MODE")
     print("========================================")
     print("Controls:")
     print("  e = toggle Sobel edges")
     print("  y = toggle YOLO detection")
     print("  d = toggle depth (auto-enables YOLO)")
     print("  m = toggle disparity heatmap")
-    print("  s = SAVE POSTER FRAMES (6 PNGs to ./poster_frames/)")
+    print("  s = save ONE distance shot (spam this!)")
+    print("  S = save ALL 6 pipeline stages")
     print("  q = quit\n")
-    print(">>> FOR POSTER FRAMES: press 'd', then 'm', then aim at a scene, then press 's' <<<\n")
+    print(">>> Press 'd' once, then aim at your car, then spam 's' <<<\n")
+    print(f">>> Numbered shots will start at 06_distance_{shot_counter}.png <<<\n")
 
     while pipeline.isRunning():
         color_frame = q_color.get().getCvFrame()
@@ -468,8 +473,7 @@ with dai.Pipeline(device) as pipeline:
             depth_m, disparity, left_rect, right_rect = compute_depth_map(left_gray, right_gray)
             depth_ms = (time.time() - t_depth) * 1000
 
-        # Keep a pristine copy of the color frame for poster captures
-        # BEFORE overlays get applied for the live window.
+        # Keep a pristine copy for saves BEFORE overlays
         color_frame_clean = color_frame.copy()
 
         if sobel_on:
@@ -519,7 +523,8 @@ with dai.Pipeline(device) as pipeline:
         status = (f"FPS: {fps_display:.1f} | Sobel[e]: {'ON' if sobel_on else 'OFF'} | "
                   f"YOLO[y]: {'ON' if yolo_on else 'OFF'} | Depth[d]: {'ON' if depth_on else 'OFF'} | "
                   f"Disparity[m]: {'ON' if show_disparity else 'OFF'} | "
-                  f"Save[s] | Engine: {'OpenMP x8' if OMP_AVAILABLE else 'OpenCV'} | Quit[q]")
+                  f"Shots saved: {shot_counter - 1} | "
+                  f"[s]=save | [S]=save all 6 | Quit[q]")
         cv2.putText(combined, status, (10, combined.shape[0] - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
@@ -546,17 +551,28 @@ with dai.Pipeline(device) as pipeline:
         if key == ord('m'):
             show_disparity = not show_disparity
             print(f"[Disparity map {'ON' if show_disparity else 'OFF'}]")
+
+        # -------- lowercase 's' — SINGLE-SHOT spammable save --------
         if key == ord('s'):
-            # Ensure we have the data we need — if not, auto-enable and skip this frame
+            if depth_m is None or yolo_results is None:
+                print("[NOTE] Depth/YOLO not on — enabling now. Press 's' again next frame.")
+                depth_on = True
+                yolo_on = True
+                continue
+            save_distance_shot(color_frame_clean, yolo_results, depth_m, shot_counter)
+            shot_counter += 1
+
+        # -------- uppercase 'S' — FULL 6-STAGE save (overwrites 01-06) --------
+        if key == ord('S'):
             need_depth = (depth_m is None) or (disparity is None) or (left_rect is None)
             need_yolo = (yolo_results is None)
             if need_depth or need_yolo:
-                print("[NOTE] 'd' or 'y' wasn't on — enabling them now. Press 's' again next frame.")
+                print("[NOTE] Depth/YOLO not on — enabling now. Press 'S' again next frame.")
                 depth_on = True
                 yolo_on = True
                 show_disparity = True
                 continue
-            save_poster_frames(
+            save_all_poster_frames(
                 color_frame_clean, left_gray, right_gray,
                 left_rect, right_rect, disparity, depth_m, yolo_results
             )
